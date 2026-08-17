@@ -1,9 +1,11 @@
+import { randomUUID } from "node:crypto";
 import type {
   GolferResult,
   Golfer,
   HearnPick,
   League,
   Participant,
+  PasswordResetToken,
   Pick,
   Season,
   SeasonEntry,
@@ -27,6 +29,7 @@ export interface LeagueData {
   results: GolferResult[];
   /** Tournament id -> golfer ids in the field. */
   fields: Record<string, string[]>;
+  passwordResetTokens: PasswordResetToken[];
 }
 
 export function emptyLeagueData(): LeagueData {
@@ -41,6 +44,7 @@ export function emptyLeagueData(): LeagueData {
     hearnPicks: [],
     results: [],
     fields: {},
+    passwordResetTokens: [],
   };
 }
 
@@ -98,4 +102,19 @@ export function findGolferByName(data: LeagueData, name: string): Golfer | undef
     data.golfers.find((g) => g.name.toLowerCase() === needle) ??
     data.golfers.find((g) => g.name.toLowerCase().includes(needle))
   );
+}
+
+/** Case-insensitive participant lookup by email, used to resolve logins and reset requests. */
+export function findParticipantByEmail(data: LeagueData, email: string): Participant | undefined {
+  const needle = email.trim().toLowerCase();
+  return data.participants.find((p) => p.email.toLowerCase() === needle);
+}
+
+/** Finds an existing golfer by name or creates one, so admin/self-service entry is forgiving. */
+export function upsertGolfer(data: LeagueData, name: string): Golfer {
+  const existing = findGolferByName(data, name);
+  if (existing) return existing;
+  const golfer: Golfer = { id: `g-${randomUUID().slice(0, 8)}`, name: name.trim() };
+  data.golfers.push(golfer);
+  return golfer;
 }

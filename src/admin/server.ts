@@ -3,22 +3,45 @@ import { randomUUID } from "node:crypto";
 import type { LeagueStore } from "../store/store.js";
 import {
   findGolferByName,
+  findParticipantByEmail,
   seasonPicks,
   seasonRoster,
   seasonTournaments,
   tournamentField,
+  upsertGolfer,
   type LeagueData,
 } from "../store/store.js";
 import { buildSeasonReport } from "../core/report.js";
 import { blockingReasons, validatePick } from "../core/oneAndDone.js";
 import { applyHearnFallbacks, findDeadHearnEntries } from "../core/hearn.js";
 import { createSeason, createTestLeague, startNewSeason } from "../core/season.js";
-import type { Golfer, Season } from "../types.js";
+import { openTournament, resolveActiveSeasonForParticipant } from "../core/emailRouting.js";
+import {
+  PASSWORD_RESET_TOKEN_TTL_MS,
+  SESSION_MAX_AGE_MS,
+  generateToken,
+  hashPassword,
+  isPasswordResetTokenExpired,
+  signSession,
+  verifyPassword,
+  verifySession,
+} from "../core/auth.js";
+import { executeCommand } from "../email/commands.js";
+import { renderSetPasswordEmail } from "../email/templates.js";
+import { getAuthedClient, sendEmail, type OAuth2Client } from "../email/gmailClient.js";
+import { createOddsCache, oddsForTournament, type OddsCache } from "../providers/dataGolfOdds.js";
+import { createPlayerListCache, type PlayerListCache } from "../providers/dataGolfPlayers.js";
+import type { Participant, Season } from "../types.js";
 import { ADMIN_HTML } from "./html.js";
+
+type SendMail = (args: { to: string; subject: string; bodyText: string }) => Promise<void>;
+type RouteAuth = "public" | "auth" | "admin";
 
 interface Route {
   method: string;
   pattern: RegExp;
+  /** public = anyone, auth = any logged-in participant, admin = isAdmin only. */
+  auth: RouteAuth;
   handler: (ctx: RouteContext) => Promise<unknown>;
 }
 
@@ -27,6 +50,16 @@ interface RouteContext {
   body: Record<string, unknown>;
   query: URLSearchParams;
   store: LeagueStore;
+  /** The logged-in participant, if any. Non-null is guaranteed for auth/admin routes by dispatch. */
+  me: Participant | null;
+  baseUrl: string;
+  setCookie: (participant: Participant) => void;
+  clearCookie: () => void;
+  sendMail: SendMail;
+  /** null when DATAGOLF_API_KEY isn't configured — odds are an optional nicety, never required. */
+  oddsCache: OddsCache | null;
+  /** null when DATAGOLF_API_KEY isn't configured — the Hearn picker then falls back to just the open tournament's field. */
+  playerListCache: PlayerListCache | null;
 }
 
 class HttpError extends Error {
@@ -41,20 +74,263 @@ function requireSeason(data: LeagueData, seasonId: string): Season {
   return season;
 }
 
-/** Finds an existing golfer by name or creates one, so admin entry is forgiving. */
-function upsertGolfer(data: LeagueData, name: string): Golfer {
-  const existing = findGolferByName(data, name);
-  if (existing) return existing;
-  const golfer: Golfer = { id: `g-${randomUUID().slice(0, 8)}`, name: name.trim() };
-  data.golfers.push(golfer);
-  return golfer;
+function meShape(p: Participant) {
+  return { id: p.id, name: p.name, email: p.email, isAdmin: Boolean(p.isAdmin), hasPassword: Boolean(p.passwordHash) };
+}
+
+function describeLookupFailure(failure: string | undefined): string {
+  switch (failure) {
+    case "NOT_A_PARTICIPANT":
+      return "This account isn't on a golf league roster. Ask the admin to add you.";
+    case "NO_ACTIVE_SEASON":
+      return "You're not on the roster of any currently active season.";
+    case "AMBIGUOUS_SEASON":
+      return "You're on the roster of more than one active season — ask the admin to sort this out.";
+    default:
+      return "Something went wrong resolving your season.";
+  }
+}
+
+/** Creates (or replaces) a one-time password link for a participant and emails it, best-effort. */
+async function issuePasswordEmail(
+  store: LeagueStore,
+  sendMail: SendMail,
+  baseUrl: string,
+  participant: Participant
+): Promise<void> {
+  const token = generateToken();
+  const expiresAt = new Date(Date.now() + PASSWORD_RESET_TOKEN_TTL_MS).toISOString();
+  await store.update((d) => {
+    d.passwordResetTokens = d.passwordResetTokens.filter((t) => t.participantId !== participant.id);
+    d.passwordResetTokens.push({ token, participantId: participant.id, expiresAt });
+  });
+  const link = `${baseUrl}/?setpw=${token}`;
+  const { subject, bodyText } = renderSetPasswordEmail(link, Boolean(participant.passwordHash));
+  try {
+    await sendMail({ to: participant.email, subject, bodyText });
+  } catch (err) {
+    console.error(`Failed to send password email to ${participant.email}:`, err);
+  }
 }
 
 const routes: Route[] = [
-  // ---- overview -----------------------------------------------------------
+  // ---- auth -----------------------------------------------------------------
+  {
+    method: "POST",
+    pattern: /^\/api\/auth\/login$/,
+    auth: "public",
+    handler: async ({ body, store, setCookie }) => {
+      const email = String(body.email ?? "").trim().toLowerCase();
+      const password = String(body.password ?? "");
+      const data = await store.read();
+      const participant = findParticipantByEmail(data, email);
+      if (!participant?.passwordHash || !verifyPassword(password, participant.passwordHash)) {
+        throw new HttpError(401, "Incorrect email or password");
+      }
+      setCookie(participant);
+      return meShape(participant);
+    },
+  },
+  {
+    method: "POST",
+    pattern: /^\/api\/auth\/logout$/,
+    auth: "public",
+    handler: async ({ clearCookie }) => {
+      clearCookie();
+      return { ok: true };
+    },
+  },
+  {
+    /** Always reports success, whether or not the email matches, so this can't be used to enumerate participants. */
+    method: "POST",
+    pattern: /^\/api\/auth\/request-reset$/,
+    auth: "public",
+    handler: async ({ body, store, baseUrl, sendMail }) => {
+      const email = String(body.email ?? "").trim().toLowerCase();
+      const data = await store.read();
+      const participant = findParticipantByEmail(data, email);
+      if (participant) await issuePasswordEmail(store, sendMail, baseUrl, participant);
+      return { ok: true };
+    },
+  },
+  {
+    method: "POST",
+    pattern: /^\/api\/auth\/set-password$/,
+    auth: "public",
+    handler: async ({ body, store, setCookie }) => {
+      const token = String(body.token ?? "");
+      const password = String(body.password ?? "");
+      if (password.length < 8) throw new HttpError(400, "Password must be at least 8 characters");
+
+      const data = await store.read();
+      const entry = data.passwordResetTokens.find((t) => t.token === token);
+      if (!entry || isPasswordResetTokenExpired(entry) || !data.participants.some((p) => p.id === entry.participantId)) {
+        throw new HttpError(400, "This link is invalid or has expired. Request a new one.");
+      }
+
+      const passwordSetAt = new Date().toISOString();
+      const passwordHash = hashPassword(password);
+      let updated: Participant | undefined;
+      await store.update((d) => {
+        const p = d.participants.find((x) => x.id === entry.participantId);
+        if (!p) return;
+        p.passwordHash = passwordHash;
+        p.passwordSetAt = passwordSetAt;
+        d.passwordResetTokens = d.passwordResetTokens.filter((t) => t.token !== token);
+        updated = p;
+      });
+      if (!updated) throw new HttpError(400, "This link is invalid or has expired. Request a new one.");
+      setCookie(updated);
+      return meShape(updated);
+    },
+  },
+  {
+    method: "GET",
+    pattern: /^\/api\/me$/,
+    auth: "auth",
+    handler: async ({ me }) => meShape(me!),
+  },
+
+  // ---- self-service (any logged-in participant) ------------------------------
+  {
+    method: "GET",
+    pattern: /^\/api\/my\/state$/,
+    auth: "auth",
+    handler: async ({ me, store, oddsCache, playerListCache }) => {
+      const data = await store.read();
+      const lookup = resolveActiveSeasonForParticipant(data, me!.email);
+      if (!lookup.ok || !lookup.season) {
+        return { season: null, failureMessage: describeLookupFailure(lookup.failure) };
+      }
+      const season = lookup.season;
+      const report = buildSeasonReport(data, season);
+      const pickTarget = openTournament(data, season.id);
+      const golferName = (id: string) => data.golfers.find((g) => g.id === id)?.name ?? id;
+      const existingPick = pickTarget
+        ? seasonPicks(data, season.id).find(
+            (p) => p.participantId === me!.id && p.tournamentId === pickTarget.id
+          )
+        : undefined;
+
+      const odds = pickTarget && oddsCache ? oddsForTournament(await oddsCache.get(), pickTarget.name) : null;
+
+      // The Hearn list is a season-long fallback, not scoped to one week —
+      // its picker draws from the whole PGA Tour roster, not just whoever's
+      // in this week's field. Always includes this week's field too, in
+      // case someone's playing but not yet in the ranked player list (e.g.
+      // a Monday qualifier).
+      const pgaTourPlayers = playerListCache ? await playerListCache.get() : null;
+      const hearnPool = new Map<string, number | null>();
+      for (const p of pgaTourPlayers ?? []) hearnPool.set(p.name, odds?.get(p.name) ?? null);
+      if (pickTarget) {
+        for (const id of tournamentField(data, pickTarget.id)) {
+          const name = golferName(id);
+          if (!hearnPool.has(name)) hearnPool.set(name, odds?.get(name) ?? null);
+        }
+      }
+
+      return {
+        season,
+        pickTarget: pickTarget
+          ? {
+              ...pickTarget,
+              field: [...tournamentField(data, pickTarget.id)]
+                .map((id) => {
+                  const name = golferName(id);
+                  return { name, odds: odds?.get(name) ?? null };
+                })
+                .sort((a, b) => a.name.localeCompare(b.name)),
+            }
+          : null,
+        hearnPool: [...hearnPool.entries()]
+          .map(([name, oddsValue]) => ({ name, odds: oddsValue }))
+          .sort((a, b) => a.name.localeCompare(b.name)),
+        existingPick: existingPick ? { golferName: golferName(existingPick.golferId) } : null,
+        myPicks: seasonPicks(data, season.id)
+          .filter((p) => p.participantId === me!.id)
+          .map((p) => ({
+            ...p,
+            golferName: golferName(p.golferId),
+            tournamentName: data.tournaments.find((t) => t.id === p.tournamentId)?.name ?? p.tournamentId,
+          })),
+        hearnList: data.hearnPicks
+          .filter((h) => h.seasonId === season.id && h.participantId === me!.id)
+          .sort((a, b) => a.rank - b.rank)
+          .map((h) => ({ ...h, golferName: golferName(h.golferId) })),
+        report: { ...report, nameByParticipantId: Object.fromEntries(report.nameByParticipantId) },
+        tournaments: seasonTournaments(data, season.id),
+      };
+    },
+  },
+  {
+    /**
+     * Submits (or changes) the caller's own pick for a given tournament —
+     * same validation as the admin path. tournamentId is explicit rather
+     * than inferred, so a stale page doesn't submit against the wrong week;
+     * validatePick still re-checks the deadline against the real tournament
+     * regardless of what the client thinks is "current."
+     */
+    method: "POST",
+    pattern: /^\/api\/my\/pick$/,
+    auth: "auth",
+    handler: async ({ me, body, store }) => {
+      const data = await store.read();
+      const lookup = resolveActiveSeasonForParticipant(data, me!.email);
+      if (!lookup.ok || !lookup.season) throw new HttpError(400, describeLookupFailure(lookup.failure));
+
+      const tournamentId = String(body.tournamentId ?? "");
+      const result = executeCommand(
+        data,
+        me!,
+        lookup.season,
+        { command: "PICK", tournamentId, golferName: String(body.golferName ?? "") },
+        new Date()
+      );
+      if (result.pickToRecord) {
+        const pickToRecord = result.pickToRecord;
+        await store.update((d) => {
+          d.picks = d.picks.filter(
+            (p) => !(p.participantId === pickToRecord.participantId && p.tournamentId === pickToRecord.tournamentId)
+          );
+          d.picks.push(pickToRecord);
+        });
+      }
+      return { ok: Boolean(result.pickToRecord), message: result.replyText };
+    },
+  },
+  {
+    /** Replaces the caller's own Hearn list for their current season. */
+    method: "PUT",
+    pattern: /^\/api\/my\/hearn$/,
+    auth: "auth",
+    handler: async ({ me, body, store }) => {
+      const data = await store.read();
+      const lookup = resolveActiveSeasonForParticipant(data, me!.email);
+      if (!lookup.ok || !lookup.season) throw new HttpError(400, describeLookupFailure(lookup.failure));
+      const seasonId = lookup.season.id;
+      const names = (body.golferNames as string[]) ?? [];
+
+      await store.update((d) => {
+        d.hearnPicks = d.hearnPicks.filter(
+          (h) => !(h.seasonId === seasonId && h.participantId === me!.id)
+        );
+        names
+          .map((n) => n.trim())
+          .filter((n) => n.length > 0)
+          .forEach((name, i) => {
+            const golfer = upsertGolfer(d, name);
+            d.hearnPicks.push({ seasonId, participantId: me!.id, golferId: golfer.id, rank: i + 1 });
+          });
+      });
+      return { ok: true, count: names.length };
+    },
+  },
+
+  // ---- overview (admin) -------------------------------------------------------
   {
     method: "GET",
     pattern: /^\/api\/state$/,
+    auth: "admin",
     handler: async ({ store }) => {
       const data = await store.read();
       return {
@@ -68,6 +344,7 @@ const routes: Route[] = [
   {
     method: "GET",
     pattern: /^\/api\/seasons\/([^/]+)\/report$/,
+    auth: "admin",
     handler: async ({ params, store }) => {
       const data = await store.read();
       const season = requireSeason(data, params[0]!);
@@ -84,6 +361,7 @@ const routes: Route[] = [
   {
     method: "GET",
     pattern: /^\/api\/seasons\/([^/]+)\/picks$/,
+    auth: "admin",
     handler: async ({ params, store }) => {
       const data = await store.read();
       const picks = seasonPicks(data, params[0]!);
@@ -95,10 +373,11 @@ const routes: Route[] = [
     },
   },
 
-  // ---- league & season lifecycle -----------------------------------------
+  // ---- league & season lifecycle (admin) --------------------------------------
   {
     method: "POST",
     pattern: /^\/api\/leagues$/,
+    auth: "admin",
     handler: async ({ body, store }) => {
       const league = {
         id: `lg-${randomUUID().slice(0, 8)}`,
@@ -113,6 +392,7 @@ const routes: Route[] = [
   {
     method: "POST",
     pattern: /^\/api\/seasons$/,
+    auth: "admin",
     handler: async ({ body, store }) => {
       const season = createSeason({
         id: `sn-${randomUUID().slice(0, 8)}`,
@@ -129,6 +409,7 @@ const routes: Route[] = [
     /** Spins up a test league running from today through the end of this year. */
     method: "POST",
     pattern: /^\/api\/test-league$/,
+    auth: "admin",
     handler: async ({ body, store }) => {
       const { league, season } = createTestLeague(
         `lg-${randomUUID().slice(0, 8)}`,
@@ -156,6 +437,7 @@ const routes: Route[] = [
     /** Rolls a league into a new year, carrying the roster, keeping old seasons intact. */
     method: "POST",
     pattern: /^\/api\/seasons\/([^/]+)\/roll-over$/,
+    auth: "admin",
     handler: async ({ params, body, store }) => {
       const data = await store.read();
       const previous = requireSeason(data, params[0]!);
@@ -176,6 +458,7 @@ const routes: Route[] = [
   {
     method: "POST",
     pattern: /^\/api\/seasons\/([^/]+)\/status$/,
+    auth: "admin",
     handler: async ({ params, body, store }) => {
       const status = String(body.status);
       if (!["DRAFT", "ACTIVE", "COMPLETE"].includes(status)) {
@@ -189,15 +472,20 @@ const routes: Route[] = [
     },
   },
 
-  // ---- roster -------------------------------------------------------------
+  // ---- roster (admin) ----------------------------------------------------------
   {
+    /** Adds a participant and emails them a link to set their password. */
     method: "POST",
     pattern: /^\/api\/participants$/,
-    handler: async ({ body, store }) => {
-      const participant = {
+    auth: "admin",
+    handler: async ({ body, store, baseUrl, sendMail }) => {
+      const participant: Participant = {
         id: `p-${randomUUID().slice(0, 8)}`,
         name: String(body.name),
         email: String(body.email).toLowerCase(),
+        isAdmin: false,
+        passwordHash: null,
+        passwordSetAt: null,
       };
       await store.update((d) => {
         if (d.participants.some((p) => p.email === participant.email)) {
@@ -205,12 +493,14 @@ const routes: Route[] = [
         }
         d.participants.push(participant);
       });
+      await issuePasswordEmail(store, sendMail, baseUrl, participant);
       return participant;
     },
   },
   {
     method: "POST",
     pattern: /^\/api\/seasons\/([^/]+)\/roster$/,
+    auth: "admin",
     handler: async ({ params, body, store }) => {
       const seasonId = params[0]!;
       const participantId = String(body.participantId);
@@ -227,10 +517,11 @@ const routes: Route[] = [
     },
   },
 
-  // ---- Hearn picks --------------------------------------------------------
+  // ---- Hearn picks (admin) -------------------------------------------------------
   {
     method: "GET",
     pattern: /^\/api\/seasons\/([^/]+)\/hearn$/,
+    auth: "admin",
     handler: async ({ params, store }) => {
       const data = await store.read();
       const seasonId = params[0]!;
@@ -253,6 +544,7 @@ const routes: Route[] = [
     /** Replaces a participant's whole Hearn list for a season, in the order given. */
     method: "PUT",
     pattern: /^\/api\/seasons\/([^/]+)\/hearn\/([^/]+)$/,
+    auth: "admin",
     handler: async ({ params, body, store }) => {
       const [seasonId, participantId] = [params[0]!, params[1]!];
       const names = (body.golferNames as string[]) ?? [];
@@ -273,10 +565,11 @@ const routes: Route[] = [
     },
   },
 
-  // ---- schedule, field, results ------------------------------------------
+  // ---- schedule, field, results (admin) -------------------------------------------
   {
     method: "POST",
     pattern: /^\/api\/tournaments$/,
+    auth: "admin",
     handler: async ({ body, store }) => {
       const data = await store.read();
       const seasonId = String(body.seasonId);
@@ -295,9 +588,28 @@ const routes: Route[] = [
     },
   },
   {
+    /** Removes a tournament that hasn't been picked yet — e.g. to undo a bad seed/import. */
+    method: "DELETE",
+    pattern: /^\/api\/tournaments\/([^/]+)$/,
+    auth: "admin",
+    handler: async ({ params, store }) => {
+      const tournamentId = params[0]!;
+      await store.update((d) => {
+        if (d.picks.some((p) => p.tournamentId === tournamentId)) {
+          throw new HttpError(409, "Can't delete a tournament that already has picks recorded.");
+        }
+        d.tournaments = d.tournaments.filter((t) => t.id !== tournamentId);
+        d.results = d.results.filter((r) => r.tournamentId !== tournamentId);
+        delete d.fields[tournamentId];
+      });
+      return { ok: true };
+    },
+  },
+  {
     /** Sets this week's field from a newline/comma separated list of golfer names. */
     method: "PUT",
     pattern: /^\/api\/tournaments\/([^/]+)\/field$/,
+    auth: "admin",
     handler: async ({ params, body, store }) => {
       const tournamentId = params[0]!;
       const names = (body.golferNames as string[]) ?? [];
@@ -321,6 +633,7 @@ const routes: Route[] = [
      */
     method: "PUT",
     pattern: /^\/api\/tournaments\/([^/]+)\/results$/,
+    auth: "admin",
     handler: async ({ params, body, store }) => {
       const tournamentId = params[0]!;
       const rows = (body.results as Record<string, unknown>[]) ?? [];
@@ -348,11 +661,12 @@ const routes: Route[] = [
     },
   },
 
-  // ---- picks --------------------------------------------------------------
+  // ---- picks (admin) ---------------------------------------------------------------
   {
-    /** Admin pick entry/override. Runs the same validation as an emailed pick. */
+    /** Admin pick entry/override. Runs the same validation as a self-service pick. */
     method: "POST",
     pattern: /^\/api\/picks$/,
+    auth: "admin",
     handler: async ({ body, store }) => {
       const data = await store.read();
       const tournamentId = String(body.tournamentId);
@@ -408,6 +722,7 @@ const routes: Route[] = [
     /** Fills in missing picks from Hearn lists. Dry run unless commit=true. */
     method: "POST",
     pattern: /^\/api\/tournaments\/([^/]+)\/run-hearn$/,
+    auth: "admin",
     handler: async ({ params, body, store }) => {
       const data = await store.read();
       const tournamentId = params[0]!;
@@ -458,26 +773,101 @@ async function readBody(req: IncomingMessage): Promise<Record<string, unknown>> 
   }
 }
 
+const SESSION_COOKIE = "session";
+
+function parseCookies(header: string | undefined): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!header) return out;
+  for (const part of header.split(";")) {
+    const idx = part.indexOf("=");
+    if (idx === -1) continue;
+    const key = part.slice(0, idx).trim();
+    if (!key) continue;
+    out[key] = decodeURIComponent(part.slice(idx + 1).trim());
+  }
+  return out;
+}
+
+function cookieHeader(value: string, maxAgeSeconds: number, secure: boolean): string {
+  const attrs = [`${SESSION_COOKIE}=${encodeURIComponent(value)}`, "Path=/", "HttpOnly", "SameSite=Lax", `Max-Age=${maxAgeSeconds}`];
+  if (secure) attrs.push("Secure");
+  return attrs.join("; ");
+}
+
+async function resolveSession(
+  req: IncomingMessage,
+  store: LeagueStore,
+  sessionSecret: string
+): Promise<Participant | null> {
+  const raw = parseCookies(req.headers.cookie)[SESSION_COOKIE];
+  if (!raw) return null;
+  const payload = verifySession(raw, sessionSecret);
+  if (!payload) return null;
+
+  const data = await store.read();
+  const participant = data.participants.find((p) => p.id === payload.participantId);
+  if (!participant) return null;
+  // Changing your password re-signs every future cookie's embedded
+  // passwordSetAt, so a stale one (signed before the change) fails here —
+  // this is what invalidates other sessions without a server-side store.
+  if ((participant.passwordSetAt ?? null) !== payload.passwordSetAt) return null;
+  return participant;
+}
+
+let cachedGmailAuth: OAuth2Client | null = null;
+async function getMailAuth(stateDir: string): Promise<OAuth2Client> {
+  if (!cachedGmailAuth) cachedGmailAuth = await getAuthedClient({ stateDir });
+  return cachedGmailAuth;
+}
+
 export interface AdminServerOptions {
   store: LeagueStore;
   port?: number;
-  /** Bind address. Defaults to 0.0.0.0 so the page is reachable on the LAN. */
+  /** Bind address. Defaults to 0.0.0.0 so the page is reachable on the LAN/internet. */
   host?: string;
-  /** Optional shared secret; when set, requests need ?token= or X-Admin-Token. */
-  token?: string;
+  /** Signs session cookies. Auto-generated (with a warning) if unset — fine for dev, set it in production. */
+  sessionSecret?: string;
+  /** State dir holding the shared Gmail OAuth token, for password-setup emails. Unset = emails are skipped (logged instead). */
+  gmailStateDir?: string;
+  /** Enables live win-odds and the full PGA Tour roster (for Hearn) in the pickers. Unset = names only, nothing else affected. */
+  dataGolfApiKey?: string;
 }
 
 export function createAdminServer(options: AdminServerOptions) {
-  const { store, token } = options;
+  const { store, gmailStateDir } = options;
+  const sessionSecret = options.sessionSecret ?? randomUUID();
+  const secureCookies = process.env.NODE_ENV === "production";
+  const oddsCache = options.dataGolfApiKey ? createOddsCache(options.dataGolfApiKey) : null;
+  const playerListCache = options.dataGolfApiKey ? createPlayerListCache(options.dataGolfApiKey) : null;
+
+  const sendMail: SendMail = async (args) => {
+    if (!gmailStateDir) {
+      console.warn(`GMAIL_STATE_DIR not configured — skipping email "${args.subject}" to ${args.to}`);
+      return;
+    }
+    const auth = await getMailAuth(gmailStateDir);
+    await sendEmail(auth, args);
+  };
 
   return createServer((req: IncomingMessage, res: ServerResponse) => {
     void (async () => {
       const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+      const baseUrl = `${req.headers["x-forwarded-proto"] ?? "http"}://${req.headers.host ?? "localhost"}`;
 
       const send = (status: number, payload: unknown, contentType = "application/json") => {
         const body = contentType === "application/json" ? JSON.stringify(payload) : String(payload);
         res.writeHead(status, { "content-type": contentType });
         res.end(body);
+      };
+      const setCookie = (participant: Participant) => {
+        const value = signSession(
+          { participantId: participant.id, passwordSetAt: participant.passwordSetAt ?? null },
+          sessionSecret
+        );
+        res.setHeader("Set-Cookie", cookieHeader(value, SESSION_MAX_AGE_MS / 1000, secureCookies));
+      };
+      const clearCookie = () => {
+        res.setHeader("Set-Cookie", cookieHeader("", 0, secureCookies));
       };
 
       try {
@@ -485,15 +875,16 @@ export function createAdminServer(options: AdminServerOptions) {
           return send(200, ADMIN_HTML, "text/html; charset=utf-8");
         }
 
-        if (token) {
-          const provided = url.searchParams.get("token") ?? req.headers["x-admin-token"];
-          if (provided !== token) return send(401, { error: "Unauthorized" });
-        }
-
-        const route = routes.find(
-          (r) => r.method === req.method && r.pattern.test(url.pathname)
-        );
+        const route = routes.find((r) => r.method === req.method && r.pattern.test(url.pathname));
         if (!route) return send(404, { error: "Not found" });
+
+        const me = await resolveSession(req, store, sessionSecret);
+        if (route.auth === "admin" && !me?.isAdmin) {
+          return send(me ? 403 : 401, { error: me ? "Admin access required" : "Unauthorized" });
+        }
+        if (route.auth === "auth" && !me) {
+          return send(401, { error: "Unauthorized" });
+        }
 
         const match = route.pattern.exec(url.pathname)!;
         const result = await route.handler({
@@ -501,6 +892,13 @@ export function createAdminServer(options: AdminServerOptions) {
           body: await readBody(req),
           query: url.searchParams,
           store,
+          me,
+          baseUrl,
+          setCookie,
+          clearCookie,
+          sendMail,
+          oddsCache,
+          playerListCache,
         });
         return send(200, result);
       } catch (error) {
@@ -516,9 +914,15 @@ export function startAdminServer(options: AdminServerOptions): void {
   const port = options.port ?? 8080;
   const host = options.host ?? "0.0.0.0";
   createAdminServer(options).listen(port, host, () => {
-    console.log(`Golf league admin listening on http://${host}:${port}`);
-    if (!options.token) {
-      console.log("No ADMIN_TOKEN set — anyone on the LAN can edit. Set one to lock it down.");
+    console.log(`Golf league listening on http://${host}:${port}`);
+    if (!options.sessionSecret) {
+      console.log("No SESSION_SECRET set — a random one was generated, so logins won't survive a restart. Set one in production.");
+    }
+    if (!options.gmailStateDir) {
+      console.log("No GMAIL_STATE_DIR set — password-setup emails will be logged instead of sent.");
+    }
+    if (!options.dataGolfApiKey) {
+      console.log("No DATAGOLF_API_KEY set — pick/Hearn pickers will show golfer names with no odds.");
     }
   });
 }

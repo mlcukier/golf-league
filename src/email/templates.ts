@@ -1,5 +1,8 @@
 import type { StandingRow } from "../core/scoring.js";
 import type { PickRejectionReason } from "../core/oneAndDone.js";
+import type { SeasonReport } from "../core/report.js";
+import { golferName, type LeagueData } from "../store/store.js";
+import type { Pick } from "../types.js";
 
 const REJECTION_MESSAGES: Record<PickRejectionReason, string> = {
   GOLFER_ALREADY_USED: "You've already used that golfer earlier this season — pick someone new.",
@@ -48,6 +51,52 @@ export function renderStandings(
     return `${i + 1}. ${name} — $${row.totalEarnings.toLocaleString()}`;
   });
   return [title, ...lines].join("\n");
+}
+
+export function renderPots(report: SeasonReport): string {
+  const lines: string[] = [`Side Pot 1: $${report.sidePot1.balance.toLocaleString()}`];
+  if (report.sidePot1.leaders.length > 0) {
+    const leaderNames = report.sidePot1.leaders
+      .map((l) => report.nameByParticipantId.get(l.participantId) ?? l.participantId)
+      .join(", ");
+    lines.push(`  Leading: ${leaderNames} (${report.sidePot1.leaders[0]!.top10s} top-10s)`);
+  }
+
+  lines.push(`The Greller: $${report.greller.currentBalance.toLocaleString()}`);
+
+  const toccEntries = Object.entries(report.tocc.netByParticipant);
+  if (toccEntries.length > 0) {
+    lines.push("TOCC net:");
+    for (const [participantId, net] of toccEntries) {
+      const name = report.nameByParticipantId.get(participantId) ?? participantId;
+      const sign = net >= 0 ? "+" : "-";
+      lines.push(`  ${name}: ${sign}$${Math.abs(net).toLocaleString()}`);
+    }
+  }
+
+  return lines.join("\n");
+}
+
+export function renderMyPicks(data: LeagueData, picks: Pick[]): string {
+  if (picks.length === 0) return "You haven't made any picks yet this season.";
+  const lines = [...picks]
+    .sort((a, b) => new Date(a.submittedAt).getTime() - new Date(b.submittedAt).getTime())
+    .map((p) => {
+      const tournament = data.tournaments.find((t) => t.id === p.tournamentId);
+      return `${tournament?.name ?? p.tournamentId}: ${golferName(data, p.golferId)}`;
+    });
+  return ["Golfers you've used this season:", ...lines].join("\n");
+}
+
+export function renderSetPasswordEmail(
+  link: string,
+  isReset: boolean
+): { subject: string; bodyText: string } {
+  const subject = isReset ? "Reset your golf league password" : "Set your golf league password";
+  const bodyText = isReset
+    ? `Click below to reset your golf league password. This link expires in 1 hour and can only be used once.\n\n${link}\n\nIf you didn't request this, you can ignore this email.`
+    : `Welcome to the golf league. Click below to set your password and get picking. This link expires in 1 hour and can only be used once.\n\n${link}`;
+  return { subject, bodyText };
 }
 
 export const HELP_TEXT = [

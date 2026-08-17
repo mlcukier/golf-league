@@ -10,13 +10,16 @@ const BASE_URL = "https://feeds.datagolf.com";
  *   - GET /get-schedule                          season schedule
  *   - GET /field-updates                          this week's confirmed field
  *   - GET /historical-event-data/event-list       event ids for a tour/year
- *   - GET /historical-event-data/event-stats      finishes, EARNINGS, points
+ *   - GET /historical-raw-data/rounds             per-round scoring + finish
  *
- * The event-stats endpoint is the one that carries prize money. DataGolf's
- * exact JSON key for it varies by tour/season in their docs, so responses are
- * read through tolerant extractors (`pickNumber` below) rather than a single
- * hard-coded key. Run `npm run verify:datagolf` once with a real key to dump
- * an actual payload and confirm the live key names.
+ * Confirmed against a live key: `historical-event-data/event-stats` (the
+ * endpoint originally assumed here from docs alone) doesn't exist — it 404s.
+ * `historical-raw-data/rounds` is the real per-event results endpoint, and it
+ * carries detailed strokes-gained/round stats and `fin_text`, but **no
+ * earnings/prize-money field of any kind** on this plan. `pickNumber` below
+ * stays tolerant of alternate money key names in case that ever changes (or
+ * a higher tier adds one), but as of this check, DataGolf cannot supply
+ * money — the admin Results tab's manual paste is the real path.
  */
 export class DataGolfProvider implements GolfDataProvider {
   constructor(
@@ -79,7 +82,7 @@ export class DataGolfProvider implements GolfDataProvider {
   async getTournamentResults(tournamentId: string): Promise<GolferResult[]> {
     const eventId = tournamentId.replace(/^dg-/, "");
     const raw = await this.get<{ scores?: unknown[]; players?: unknown[] }>(
-      "historical-event-data/event-stats",
+      "historical-raw-data/rounds",
       { tour: this.tour, event_id: eventId }
     );
     const rows = (Array.isArray(raw.scores) ? raw.scores : raw.players) ?? [];

@@ -6,20 +6,33 @@ opens Jan 1 and closes with the second FedEx Cup playoff event. Tracks the
 season race, four quarterly races, three side pots (Side Pot 1, the Greller,
 TOCC), and Hearn-pick fallbacks — across multiple years and multiple leagues.
 
-Participants interact entirely by email. Administration happens on a web page
-served on the local network.
+Everyone — participants and the admin alike — uses one web app: log in with
+email + password, make your pick for the current tournament, manage your
+Hearn fallback list, and check standings/pots. Admins get extra tabs for
+schedule, results, and roster management. Email is used only for one-way
+password-setup links today, and later (see "Still to build") for weekly
+digests and deadline reminders.
 
 ## Quick start
 
 ```bash
 npm install
-npm test                 # 74 unit tests over the rule engine
+npm test                 # 107 unit tests over the rule engine, auth, and routing
 npm run build
-LEAGUE_DB=./data/league.json ADMIN_PORT=8080 ADMIN_TOKEN=pick-a-secret npm start
+LEAGUE_DB=./data/league.json ADMIN_PORT=8080 SESSION_SECRET=pick-a-secret npm start
 ```
 
-Then open `http://<your-box>:8080/?token=pick-a-secret` from any device on the
-LAN. The admin page has no build step and works on a phone.
+There's a chicken-and-egg problem bootstrapping the first admin: creating and
+promoting a participant both require already being logged in as one. Solve it
+once, without a running server:
+
+```bash
+LEAGUE_DB=./data/league.json node scripts/seed-admin.mjs you@example.com 'temporary-password' "Your Name"
+```
+
+Then open `http://<your-box>:8080/` from any device, log in, and use the
+*Roster* tab to add everyone else — each gets emailed a link to set their own
+password. The page has no build step and works on a phone.
 
 ## League rules as implemented
 
@@ -27,7 +40,7 @@ LAN. The admin page has no build step and works on a phone.
 | --- | --- |
 | **One and done** | Each participant may use each golfer at most once **per season**. The pool resets each year. |
 | **Weekly scoring** | Points = the selected golfer's prize money that week. |
-| **Pick deadline** | A pick email must be **received strictly before the tournament's start time**. At/after the start is rejected. |
+| **Pick deadline** | A pick must be **submitted strictly before the tournament's start time**. At/after the start is rejected. |
 | **Season winner** | Highest total earnings across the season. |
 | **Quarterly winners** | The season's tournaments split into **4 equal segments by event count**; highest earnings in each. |
 | **Side Pot 1** | Funded by $50 per missed cut. Won by the participant whose picks produced the most top-10s; ties break on top-5s, then wins. |
@@ -50,28 +63,21 @@ path anywhere in the system:
 A regression test pins each of these, including the "forced late pick hides a
 duplicate golfer" bug that an end-to-end run caught during development.
 
-## Data source: DataGolf — NOT YET VERIFIED
+## Data source: DataGolf
 
-**Status: unconfirmed.** DataGolf's published docs describe a **Historical
-Event Data** category with an *Event Finishes, Earnings & Points* endpoint,
-which is where prize money would live:
+**Confirmed against a live key: no prize-money field exists on this plan.**
+The endpoint originally assumed from DataGolf's docs
+(`historical-event-data/event-stats`) doesn't exist — it 404s. The real
+per-event results endpoint is `historical-raw-data/rounds`, and its rows
+carry detailed strokes-gained/round stats and a finish (`fin_text`), but no
+earnings/money field of any kind. Schedule (`get-schedule`) and this week's
+field (`field-updates`) work fine and are date/player data only, no money
+involved either way.
 
-- `GET /historical-event-data/event-list?tour=pga` — event ids per season
-- `GET /historical-event-data/event-stats?tour=pga&event_id=…&year=…` —
-  finishes, earnings, FedEx Cup points, DG points
-- `GET /get-schedule`, `GET /field-updates` — schedule and this week's field
-
-That comes from their documentation, **not from a live response**. All
-DataGolf hosts (`datagolf.com`, `am.datagolf.org`, `feeds.datagolf.com`) are
-blocked by the egress policy of the environment this was built in, so no
-actual payload was ever inspected. Two open questions remain:
-
-1. **Does the response carry real dollars, or only points?** An endpoint
-   documented as "Earnings & Points" could still return only points on a given
-   plan.
-2. **Is historical event data included in your subscription tier?**
-
-### Answering both in ten seconds
+`src/providers/dataGolfProvider.ts` still reads results through tolerant
+extractors (`earnings`, `money`, `prize_money`, `purse_won`, `winnings`,
+`payout`) in case a future endpoint or higher tier adds one — re-run the
+classifier below if your plan ever changes:
 
 ```bash
 DATAGOLF_API_KEY=xxxx npm run verify:datagolf
@@ -80,26 +86,39 @@ DATAGOLF_API_KEY=xxxx npm run verify:datagolf
 Zero dependencies, no build step. It pulls a completed event, prints every
 field on the winner's row, and classifies them into money-like vs points-like
 — then sanity-checks magnitude, since a PGA winner takes home $1-4M but scores
-only ~500-750 FedEx points. Output is one of:
+only ~500-750 FedEx points. The classifier itself is unit tested
+(`src/test/verifyClassifier.test.ts`), including the `fedex_points_earned`
+trap where a field name contains "earn" but is really points.
 
-- `✅ REAL PRIZE MONEY IS AVAILABLE` plus the exact field name to use
-- `⚠️ SUSPECT` — a money-named field whose value is too small to be winnings
-  (a zero-filled or points-valued column)
-- `❌ NO earnings field` — points only, with the question to send DataGolf support
+**Since earnings aren't available**, nothing is blocked: the admin
+**Results** tab accepts pasted results (`Golfer, earnings, finish`) with no
+API involved. Prize money is also printed on every tournament leaderboard, so
+a weekly copy-paste is the real path for this league.
 
-The classifier itself is unit tested (`src/test/verifyClassifier.test.ts`),
-including the `fedex_points_earned` trap where a field name contains "earn"
-but is really points.
+### Seeding the schedule and field from DataGolf
 
-`src/providers/dataGolfProvider.ts` already accepts `earnings`, `money`,
-`prize_money`, `purse_won`, `winnings`, or `payout`, and parses `"$1,350,000"`
-as well as raw numbers — so once you know the field name it likely needs no
-change at all.
+`scripts/seed-schedule.mjs` pulls the season schedule via the app's own admin
+API — every tournament goes through the same validation as typing it in by
+hand — and tries to spot the 2nd FedEx Cup playoff event (BMW Championship)
+to mark as the season finale and stop there, since nothing else truncates an
+admin-entered schedule at the finale automatically
+(`core/season.ts`'s `selectSeasonTournaments` has that logic, but only the
+DataGolf provider's `getSeasonSchedule` path calls it — not admin-entered
+tournaments):
 
-**If earnings turn out not to be available**, nothing is blocked: the admin
-**Results** tab accepts pasted results (`Golfer, earnings, finish`) with no API
-involved. Prize money is also printed on every tournament leaderboard, so a
-weekly copy-paste is a viable permanent fallback.
+```bash
+DATAGOLF_API_KEY=xxxx GOLF_APP_EMAIL=you@example.com GOLF_APP_PASSWORD=xxx \
+  node scripts/seed-schedule.mjs <seasonId> <year>
+```
+
+Defaults to events DataGolf still marks "upcoming" — already-played events
+have no pick to make and would sit there with no results forever, which (per
+`core/emailRouting.ts`) blocks every participant's pick target until someone
+backfills real results. Set `DATAGOLF_INCLUDE_COMPLETED=1` to seed the whole
+year anyway. Pick deadlines default to 10:00 UTC on each start date (DataGolf
+gives no tee time) — adjust in the Schedule tab if precision matters. Set the
+field for a tournament the same way, straight from `field-updates`, via the
+admin `PUT /api/tournaments/:id/field` route.
 
 ## Multi-year and test leagues
 
@@ -127,21 +146,28 @@ src/
     greller.ts               Weekly pot, unique-winning-pick payout
     tocc.ts                  TOCC subgroup side action
     report.ts                Composes all standings + pots into one view
+    emailRouting.ts          Participant→season resolution + openTournament (the league-wide current week)
+    auth.ts                  Password hashing, tokens, signed session cookies (pure, node:crypto only)
   providers/
     golfDataProvider.ts      Adapter interface
-    dataGolfProvider.ts      DataGolf implementation
+    dataGolfProvider.ts      DataGolf implementation (schedule, field, results)
+    dataGolfOdds.ts          Live win-odds fetch + cache + event-match guard
+    dataGolfPlayers.ts       Full PGA Tour roster fetch + cache, for Hearn Picks
     mockGolfDataProvider.ts  In-memory stand-in
   scripts/verify-datagolf.mjs  (repo root) Confirms money vs points on your plan
   store/
     store.ts                 LeagueData shape + season-scoped read helpers
     jsonStore.ts             Atomic JSON-file store (+ in-memory for tests)
   admin/
-    server.ts                LAN admin HTTP API
-    html.ts                  The admin single-page app
+    server.ts                The whole HTTP API — public/auth/admin routes
+    html.ts                  The single-page app (login, My Picks, admin tabs)
   email/
-    parser.ts                Inbound command parsing
-    templates.ts             Outbound reply text
-  test/                      74 tests
+    commands.ts              Executes a PICK/STANDINGS/POTS/MYPICKS/HELP command against the store
+    templates.ts             Reply/notification text (set-password email today; digests later)
+    gmailClient.ts            Gmail API wrapper (reuses gmail-worker's OAuth token)
+  test/                      128 tests
+scripts/seed-admin.mjs       Bootstraps the first admin account, no server needed
+scripts/seed-schedule.mjs    Pulls a season's schedule from DataGolf via the admin API
 prisma/schema.prisma         Optional Postgres model (documented upgrade path)
 ```
 
@@ -153,25 +179,108 @@ unit tested in isolation.
 | Env var | Default | Purpose |
 | --- | --- | --- |
 | `LEAGUE_DB` | `./data/league.json` | League database file |
-| `ADMIN_PORT` | `8080` | Admin HTTP port |
-| `ADMIN_HOST` | `0.0.0.0` | Bind address (LAN-visible by default) |
-| `ADMIN_TOKEN` | *(unset)* | Shared secret; without it anyone on the LAN can edit |
-| `DATAGOLF_API_KEY` | — | Used by the verify script and the provider |
+| `ADMIN_PORT` | `8080` | HTTP port |
+| `ADMIN_HOST` | `0.0.0.0` | Bind address (LAN/internet-visible by default) |
+| `SESSION_SECRET` | *(random, regenerated each restart)* | Signs session cookies — set a fixed one in production, or every restart logs everyone out |
+| `GMAIL_STATE_DIR` | *(unset — emails are logged, not sent)* | Where the shared `google-oauth.json`/`google-token.json` live; see below |
+| `DATAGOLF_API_KEY` | *(unset — pickers show names with no odds)* | Used by the verify script, the schedule/field seed script, and live win odds in the pick/Hearn pickers |
+| `NODE_ENV` | — | Set to `production` to mark session cookies `Secure` (requires HTTPS) |
+
+## Auth
+
+One account system for everyone: a `Participant` is just flagged `isAdmin`
+to unlock the admin tabs, instead of the old separate `ADMIN_TOKEN` link.
+
+- **Login** is email + password. Passwords are hashed with `scrypt`
+  (`src/core/auth.ts`, `node:crypto` only — no new dependency).
+- **Sessions** are a signed, stateless cookie (HMAC-SHA256) — no server-side
+  session table. The cookie embeds the participant's `passwordSetAt`, so
+  changing your password invalidates every other active session without
+  needing one.
+- **Setting a password** happens by email: adding a participant (or "forgot
+  password") emails them a one-time link (1 hour expiry) via
+  `src/email/gmailClient.ts`, which reuses the OAuth client + refresh token
+  already authorized by the `gmail-worker` app at `~/.clawdbot-gmail-worker`
+  — no separate Google Cloud setup, as long as `GMAIL_STATE_DIR` points at
+  it. Without it, links are logged to the console instead of emailed (handy
+  for local dev).
+- **Bootstrapping the first admin** — see Quick start above,
+  `scripts/seed-admin.mjs`.
+
+Known, deliberate gaps: no login rate-limiting, and CSRF protection relies on
+`SameSite=Lax` cookies rather than a separate token — both fine at this app's
+scale, worth revisiting if that changes.
+
+## Picks and Hearn Picks
+
+`openTournament` (`src/core/emailRouting.ts`) decides which tournament is
+currently open, league-wide: the earliest one in a season with no posted
+results yet. Deliberately clock- and participant-independent — a tournament
+only closes once its results are in, not once its deadline passes, and it's
+the same "current" week for everyone rather than tracked per participant.
+Two things that fell out of that:
+
+- **Changing a pick** just works: `POST /api/my/pick` always takes an
+  explicit `tournamentId` and replaces any existing pick for that week
+  (excluded from the one-and-done check before validating, same as the
+  admin override path) rather than rejecting a resubmit. `validatePick`
+  still enforces the real deadline against the tournament actually named, so
+  a stale page can't sneak a late pick through.
+- A participant who misses a week with no valid Hearn fallback (see
+  `hearn.ts` — it never invents a pick) doesn't get stuck: once that week's
+  results are posted, `openTournament` moves on for everyone regardless of
+  whether they ever had a pick recorded for it.
+
+Both the weekly pick (**My Picks** tab) and the season-long fallback list
+(**Hearn Picks** tab) are `<select>` dropdowns, not free text — no more
+misspelled golfer names. They're deliberately sourced differently, though:
+
+- The **weekly pick** is scoped to the open tournament's actual confirmed
+  field — you can only pick someone playing that week.
+- **Hearn Picks** draws from the whole PGA Tour roster
+  (`src/providers/dataGolfPlayers.ts`, `preds/get-dg-rankings` filtered to
+  `primary_tour: "PGA"` — 188 real tour players, not the ~50 in any one
+  week's field and not the ~3,500 across every tour DataGolf tracks
+  worldwide). It's a fallback that can be called on for *any* future week,
+  so scoping it to this week's field would make most of the tour
+  unselectable for no reason.
+
+Either way, an existing Hearn entry (or pick) whose golfer has since dropped
+out of the relevant pool stays selectable in its dropdown instead of quietly
+disappearing on the next save.
+
+Each option shows DataGolf's live win odds when available via
+`src/providers/dataGolfOdds.ts`, which caches `preds/pre-tournament` for 10
+minutes and — since that endpoint has no way to request a *specific* future
+event, only whichever one DataGolf currently has predictions for, and that
+can lag the actual upcoming tournament by several days — only attaches odds
+when the response's event name matches the tournament being priced.
+Otherwise odds just show as unavailable rather than risk showing the wrong
+week's numbers; they appear automatically once DataGolf catches up, no
+redeploy needed. Odds naturally only show up for Hearn options that also
+happen to be in the current field, since that's the only event odds exist
+for.
+
+Admin-only nav tabs get a distinct (violet) color so the admin and
+self-service areas of the page always read as separate zones.
 
 ## Still to build
 
-The rule engine, store, and admin UI are done and tested end to end. What
-remains needs credentials or a decision from you:
+The rule engine, store, and the combined participant/admin web app are done
+and tested end to end. What remains needs credentials or a decision from you:
 
-- **Email transport.** `src/email/parser.ts` and `templates.ts` handle the
-  message content; nothing yet polls `mlcukier+golfleague@gmail.com`. You
-  mentioned an existing Gmail push/pull app on the same box — the cleanest
-  path is to reuse its credentials and hand parsed messages to the parser.
-  Tell me which library it uses and I'll wire it in.
-- **Scheduler.** A cron that (a) fetches results after each event, (b) runs
-  Hearn fallbacks at each tournament's start time, (c) sends the weekly digest
-  and deadline reminders. The Hearn step is a single already-tested call.
-- **Confirming the DataGolf earnings key** via `npm run verify:datagolf`.
+- **Scheduler.** A cron that (a) fetches results after each event — since
+  DataGolf has no money, this means posting the admin-pasted results, not an
+  API pull, (b) runs Hearn fallbacks at each tournament's start time, (c)
+  sends the weekly digest and deadline-reminder emails. The Hearn step is a
+  single already-tested call; `src/email/templates.ts` already has
+  `renderStandings`/`renderPots` ready to become digest content, and
+  `gmailClient.sendEmail` is the same function the password-setup emails use.
+- **Deploying to a public host.** Runs locally today; moving to a small
+  cloud VPS/PaaS needs a domain, HTTPS, and a decision on whether the JSON
+  file store survives as-is (needs a persistent volume, not ephemeral
+  storage) or gets swapped for the Prisma/Postgres schema that's already
+  sketched out in `prisma/schema.prisma`.
 
 ## Assumptions
 

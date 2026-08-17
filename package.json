@@ -2,7 +2,7 @@
   "name": "golf-league",
   "version": "0.1.0",
   "private": true,
-  "description": "Season-long one-and-done golf league: picks, scoring, and side pots, run over email.",
+  "description": "Season-long one-and-done golf league: picks, scoring, and side pots, run over the web.",
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -11,12 +11,15 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
-    "verify:datagolf": "node scripts/verify-datagolf.mjs"
+    "verify:datagolf": "node scripts/verify-datagolf.mjs",
+    "seed-admin": "node scripts/seed-admin.mjs"
   },
   "devDependencies": {
     "typescript": "^5.6.2",
     "vitest": "^2.1.4",
     "@types/node": "^22.7.5"
   },
-  "dependencies": {}
+  "dependencies": {
+    "googleapis": "^171.0.0"
+  }
 }

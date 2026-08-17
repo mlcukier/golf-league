@@ -111,7 +111,7 @@ async function main() {
     console.log(`Using event_id=${eventId} year=${year} ${eventName}\n`);
   }
 
-  const stats = await getJson("historical-event-data/event-stats", { tour, event_id: eventId, year });
+  const stats = await getJson("historical-raw-data/rounds", { tour, event_id: eventId, year });
   const rows = firstRowArray(stats);
   if (!rows.length) {
     console.log("No result rows returned. Raw payload (truncated):");

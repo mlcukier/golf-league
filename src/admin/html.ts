@@ -1,16 +1,16 @@
 /**
- * The admin single-page app, served at / on the LAN. Deliberately one
- * dependency-free string: no build step, no CDN, works on a phone browser
- * from the couch.
+ * The whole web app — login, self-service picks, and (for admins) the admin
+ * dashboard — deliberately one dependency-free string: no build step, no
+ * CDN, works on a phone browser from the couch.
  */
 export const ADMIN_HTML = /* html */ `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Golf League Admin</title>
+<title>Golf League</title>
 <style>
-  :root { --bg:#0f1512; --panel:#18211c; --line:#2b382f; --text:#e8f0ea; --muted:#93a89a; --accent:#4ba36a; --warn:#d9a441; --bad:#d96a5a; }
+  :root { --bg:#0f1512; --panel:#18211c; --line:#2b382f; --text:#e8f0ea; --muted:#93a89a; --accent:#4ba36a; --warn:#d9a441; --bad:#d96a5a; --admin:#9b8cff; --admin-bg:#1c1a2e; }
   * { box-sizing: border-box; }
   body { margin:0; font:15px/1.5 system-ui,-apple-system,sans-serif; background:var(--bg); color:var(--text); }
   header { padding:14px 18px; border-bottom:1px solid var(--line); display:flex; gap:14px; align-items:center; flex-wrap:wrap; }
@@ -18,6 +18,9 @@ export const ADMIN_HTML = /* html */ `<!doctype html>
   nav { display:flex; gap:4px; flex-wrap:wrap; }
   nav button { background:transparent; border:1px solid transparent; color:var(--muted); padding:6px 11px; border-radius:7px; cursor:pointer; font-size:14px; }
   nav button.on { background:var(--panel); border-color:var(--line); color:var(--text); }
+  /* Admin-only nav gets its own color so it always reads as a separate zone from participant self-service. */
+  nav button[data-admin] { background:var(--admin-bg); border-color:rgba(155,140,255,.28); color:#c8bfff; }
+  nav button[data-admin].on { background:var(--admin); border-color:var(--admin); color:#0f0b24; }
   main { padding:18px; max-width:1100px; }
   section { display:none; }
   section.on { display:block; }
@@ -38,26 +41,61 @@ export const ADMIN_HTML = /* html */ `<!doctype html>
   .dead { color:var(--bad); text-decoration:line-through; }
   .hearn { color:var(--warn); }
   .muted { color:var(--muted); }
-  #toast { position:fixed; right:16px; bottom:16px; background:var(--panel); border:1px solid var(--line); padding:10px 14px; border-radius:8px; display:none; max-width:60ch; }
+  #toast { position:fixed; right:16px; bottom:16px; background:var(--panel); border:1px solid var(--line); padding:10px 14px; border-radius:8px; display:none; max-width:60ch; z-index:10; }
   .stat { font-size:24px; font-weight:650; }
+  .authWrap { max-width:360px; margin:60px auto; padding:0 16px; }
+  .authWrap input { width:100%; }
 </style>
 </head>
 <body>
+
+<div id="authScreen" style="display:none">
+  <div class="authWrap">
+    <div class="card">
+      <h2>Log in</h2>
+      <div class="row"><input id="loginEmail" type="email" placeholder="Email" autocomplete="username"></div>
+      <div class="row"><input id="loginPassword" type="password" placeholder="Password" autocomplete="current-password"></div>
+      <div class="row"><button class="act" id="loginGo" style="width:100%">Log in</button></div>
+      <p class="muted"><a href="#" id="forgotLink" style="color:inherit">Forgot your password?</a></p>
+      <div id="forgotBox" style="display:none">
+        <div class="row"><input id="forgotEmail" type="email" placeholder="Email"></div>
+        <div class="row"><button class="act ghost" id="forgotGo" style="width:100%">Email me a reset link</button></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="setpwScreen" style="display:none">
+  <div class="authWrap">
+    <div class="card">
+      <h2>Set your password</h2>
+      <div class="row"><input id="setpwPassword" type="password" placeholder="New password (min 8 characters)" autocomplete="new-password"></div>
+      <div class="row"><button class="act" id="setpwGo" style="width:100%">Set password</button></div>
+    </div>
+  </div>
+</div>
+
+<div id="app" style="display:none">
 <header>
-  <h1>⛳ Golf League Admin</h1>
-  <select id="seasonPicker"></select>
+  <h1>⛳ Golf League</h1>
+  <select id="seasonPicker" data-admin></select>
   <nav>
-    <button data-tab="dash" class="on">Dashboard</button>
-    <button data-tab="picks">Picks</button>
-    <button data-tab="hearn">Hearn Lists</button>
-    <button data-tab="schedule">Schedule</button>
-    <button data-tab="results">Results</button>
-    <button data-tab="roster">Roster</button>
-    <button data-tab="seasons">Seasons</button>
+    <button data-tab="mypicks" class="on">My Picks</button>
+    <button data-tab="myhearn">Hearn Picks</button>
+    <button data-tab="dash" data-admin>Dashboard</button>
+    <button data-tab="picks" data-admin>Picks</button>
+    <button data-tab="hearn" data-admin>Hearn Lists</button>
+    <button data-tab="schedule" data-admin>Schedule</button>
+    <button data-tab="results" data-admin>Results</button>
+    <button data-tab="roster" data-admin>Roster</button>
+    <button data-tab="seasons" data-admin>Seasons</button>
   </nav>
+  <button class="act ghost" id="logoutBtn" style="margin-left:auto">Log out</button>
 </header>
 <main>
-  <section id="dash" class="on"></section>
+  <section id="mypicks" class="on"></section>
+  <section id="myhearn"></section>
+  <section id="dash"></section>
   <section id="picks"></section>
   <section id="hearn"></section>
   <section id="schedule"></section>
@@ -65,11 +103,12 @@ export const ADMIN_HTML = /* html */ `<!doctype html>
   <section id="roster"></section>
   <section id="seasons"></section>
 </main>
+</div>
 <div id="toast"></div>
+
 <script>
-const token = new URLSearchParams(location.search).get('token');
 const $ = (id) => document.getElementById(id);
-let STATE = null, SEASON = null, REPORT = null;
+let ME = null, MY = null, STATE = null, SEASON = null, REPORT = null;
 
 function toast(msg, bad) {
   const t = $('toast');
@@ -79,9 +118,9 @@ function toast(msg, bad) {
   setTimeout(() => (t.style.display = 'none'), 3200);
 }
 async function api(path, method, body) {
-  const url = path + (token ? (path.includes('?') ? '&' : '?') + 'token=' + token : '');
-  const res = await fetch(url, {
+  const res = await fetch(path, {
     method: method || 'GET',
+    credentials: 'include',
     headers: { 'content-type': 'application/json' },
     body: body ? JSON.stringify(body) : undefined,
   });
@@ -91,7 +130,57 @@ async function api(path, method, body) {
 }
 const money = (n) => '$' + Math.round(n).toLocaleString();
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const pname = (id) => (REPORT && REPORT.nameByParticipantId[id]) || id;
+const pname = (id, report) => (report && report.nameByParticipantId[id]) || id;
+const oddsLabel = (odds) => (odds == null ? '' : ' (' + (odds > 0 ? '+' : '') + odds + ')');
+
+/**
+ * Builds a golfer <select>'s options from the current field (with odds when
+ * available), plus any "extra" names that must stay selectable even though
+ * they're not in that field — an existing pick/Hearn entry made before the
+ * field changed, so it never silently vanishes from the dropdown and gets
+ * lost on the next save.
+ */
+function golferOptionsHtml(field, extraNames, selectedName) {
+  const inField = new Set((field || []).map((g) => g.name));
+  const extras = (extraNames || []).filter((n) => n && !inField.has(n)).map((n) => ({ name: n, odds: null }));
+  const pool = [...(field || []), ...extras].sort((a, b) => a.name.localeCompare(b.name));
+  return (
+    '<option value="">—</option>' +
+    pool.map((g) => '<option value="' + esc(g.name) + '"' + (g.name === selectedName ? ' selected' : '') +
+      '>' + esc(g.name) + esc(oddsLabel(g.odds)) + '</option>').join('')
+  );
+}
+
+// ---- boot / auth ----------------------------------------------------------
+
+function showScreen(id) {
+  ['authScreen', 'setpwScreen', 'app'].forEach((x) => { $(x).style.display = x === id ? '' : 'none'; });
+}
+
+function wireAuthScreen() {
+  $('loginGo').onclick = async () => {
+    try {
+      await api('/api/auth/login', 'POST', { email: $('loginEmail').value, password: $('loginPassword').value });
+      location.reload();
+    } catch (e) { toast(e.message, true); }
+  };
+  $('forgotLink').onclick = (e) => { e.preventDefault(); $('forgotBox').style.display = 'block'; };
+  $('forgotGo').onclick = async () => {
+    try {
+      await api('/api/auth/request-reset', 'POST', { email: $('forgotEmail').value });
+      toast('If that email is on the roster, a link is on its way.');
+    } catch (e) { toast(e.message, true); }
+  };
+}
+
+function wireSetpwScreen(token) {
+  $('setpwGo').onclick = async () => {
+    try {
+      await api('/api/auth/set-password', 'POST', { token, password: $('setpwPassword').value });
+      location.href = '/';
+    } catch (e) { toast(e.message, true); }
+  };
+}
 
 document.querySelectorAll('nav button').forEach((b) => {
   b.onclick = () => {
@@ -100,8 +189,40 @@ document.querySelectorAll('nav button').forEach((b) => {
     render();
   };
 });
+$('logoutBtn').onclick = async () => {
+  try { await api('/api/auth/logout', 'POST', {}); } catch { /* ignore */ }
+  location.reload();
+};
 
 async function boot() {
+  const setpwToken = new URLSearchParams(location.search).get('setpw');
+  if (setpwToken) {
+    showScreen('setpwScreen');
+    wireSetpwScreen(setpwToken);
+    return;
+  }
+
+  try {
+    ME = await api('/api/me');
+  } catch {
+    showScreen('authScreen');
+    wireAuthScreen();
+    return;
+  }
+
+  showScreen('app');
+  document.querySelectorAll('[data-admin]').forEach((el) => { el.style.display = ME.isAdmin ? '' : 'none'; });
+
+  await loadMyState();
+  if (ME.isAdmin) await bootAdmin();
+  render();
+}
+
+async function loadMyState() {
+  MY = await api('/api/my/state');
+}
+
+async function bootAdmin() {
   STATE = await api('/api/state');
   const sel = $('seasonPicker');
   sel.innerHTML = STATE.seasons.map((s) => {
@@ -122,6 +243,8 @@ async function loadSeason() {
 function render() {
   const tab = document.querySelector('nav button.on').dataset.tab;
   const el = $(tab);
+  if (tab === 'mypicks') return renderMyPicksTab(el);
+  if (tab === 'myhearn') return renderMyHearnTab(el);
   if (!REPORT && tab !== 'seasons') {
     el.innerHTML = '<div class="card"><p class="muted">No season selected. Create one in the Seasons tab.</p></div>';
     return;
@@ -130,47 +253,141 @@ function render() {
      results: renderResults, roster: renderRoster, seasons: renderSeasons })[tab](el);
 }
 
-function standingsTable(rows) {
+// ---- shared standings/pots rendering (used by My Picks and the admin Dashboard) ----
+
+function standingsTable(rows, report) {
   if (!rows || !rows.length) return '<p class="muted">No results yet.</p>';
   return '<table><tr><th>#</th><th>Participant</th><th class="num">Earnings</th></tr>' +
-    rows.map((r, i) => '<tr><td>' + (i + 1) + '</td><td>' + esc(pname(r.participantId)) +
+    rows.map((r, i) => '<tr><td>' + (i + 1) + '</td><td>' + esc(pname(r.participantId, report)) +
       '</td><td class="num">' + money(r.totalEarnings) + '</td></tr>').join('') + '</table>';
 }
 
+function potsCardsHtml(report, season, tournaments) {
+  const sp = report.sidePot1, gr = report.greller, tocc = report.tocc;
+  return (
+    '<div class="card"><h2>Side Pot 1 — Most Top 10s</h2>' +
+      '<p class="stat">' + money(sp.balance) + '</p>' +
+      '<p class="muted">Funded by ' + money(season.missedCutFine) + ' missed-cut fines</p>' +
+      '<table><tr><th>Participant</th><th class="num">T10</th><th class="num">T5</th><th class="num">Wins</th></tr>' +
+      sp.tallies.slice().sort((a,b) => b.top10s - a.top10s || b.top5s - a.top5s || b.wins - a.wins)
+        .map((t) => '<tr><td>' + esc(pname(t.participantId, report)) + '</td><td class="num">' + t.top10s +
+          '</td><td class="num">' + t.top5s + '</td><td class="num">' + t.wins + '</td></tr>').join('') +
+      '</table></div>' +
+    '<div class="card"><h2>The Greller</h2>' +
+      '<p class="stat">' + money(gr.currentBalance) + '</p>' +
+      '<p class="muted">' + money(season.grellerWeeklyContribution) + '/participant/week; won by a unique pick of the winner</p>' +
+      '<table><tr><th>Week</th><th>Winner</th><th class="num">Pot after</th></tr>' +
+      gr.history.map((w) => {
+        const t = tournaments.find((x) => x.id === w.tournamentId);
+        return '<tr><td>' + esc(t ? t.name : w.tournamentId) + '</td><td>' +
+          (w.winnerParticipantId ? esc(pname(w.winnerParticipantId, report)) : '<span class="muted">rollover</span>') +
+          '</td><td class="num">' + money(w.potBalanceAfter) + '</td></tr>';
+      }).join('') + '</table></div>' +
+    '<div class="card"><h2>TOCC Side Action</h2>' +
+      '<p class="muted">' + money(season.toccStake) + '/wk, ' + money(season.toccStakeIfWinner) + ' if the pick wins outright</p>' +
+      '<table><tr><th>Participant</th><th class="num">Net</th></tr>' +
+      Object.entries(tocc.netByParticipant).sort((a,b) => b[1] - a[1])
+        .map(([id, net]) => '<tr><td>' + esc(pname(id, report)) + '</td><td class="num" style="color:' +
+          (net >= 0 ? 'var(--accent)' : 'var(--bad)') + '">' + money(net) + '</td></tr>').join('') +
+      '</table></div>'
+  );
+}
+
+// ---- My Picks (every logged-in participant) --------------------------------
+
+function renderMyPicksTab(el) {
+  if (!MY.season) {
+    el.innerHTML = '<div class="card"><p class="muted">' + esc(MY.failureMessage || 'No active season.') + '</p></div>';
+    return;
+  }
+
+  const pt = MY.pickTarget;
+  const existingName = MY.existingPick ? MY.existingPick.golferName : null;
+  const pickCard = pt
+    ? '<div class="card"><h2>' + esc(pt.name) + '</h2>' +
+        '<p class="muted">Deadline: ' + new Date(pt.startTime).toLocaleString() +
+        (existingName ? ' · Current pick: <strong>' + esc(existingName) + '</strong>' : '') + '</p>' +
+        '<div class="row">' +
+          '<select id="myPickG" style="min-width:240px">' + golferOptionsHtml(pt.field, [existingName], existingName) + '</select>' +
+          '<button class="act" id="myPickGo">' + (existingName ? 'Update pick' : 'Submit pick') + '</button>' +
+        '</div></div>'
+    : '<div class="card"><p class="muted">No upcoming tournament open for picks right now.</p></div>';
+
+  const picksTable = MY.myPicks.length
+    ? '<table><tr><th>Week</th><th>Golfer</th><th>Source</th></tr>' +
+      MY.myPicks.map((p) => '<tr><td>' + esc(p.tournamentName) + '</td><td>' + esc(p.golferName) +
+        '</td><td class="' + (p.source === 'hearn' ? 'hearn' : 'muted') + '">' + esc(p.source) + '</td></tr>').join('') +
+      '</table>'
+    : '<p class="muted">No picks yet this season.</p>';
+
+  const q = MY.report.quarterStandings || {};
+  el.innerHTML =
+    pickCard +
+    '<div class="card"><h2>Your picks this season</h2>' + picksTable + '</div>' +
+    '<div class="card"><h2>Season Standings</h2>' + standingsTable(MY.report.seasonStandings, MY.report) + '</div>' +
+    '<div class="grid2">' + [1,2,3,4].map((n) =>
+      '<div class="card"><h2>Quarter ' + n + '</h2>' + standingsTable(q[n], MY.report) + '</div>').join('') + '</div>' +
+    '<div class="grid2">' + potsCardsHtml(MY.report, MY.season, MY.tournaments) + '</div>';
+
+  if (pt) {
+    $('myPickGo').onclick = async () => {
+      const golferName = $('myPickG').value;
+      if (!golferName) return toast('Choose a golfer first', true);
+      try {
+        const r = await api('/api/my/pick', 'POST', { tournamentId: pt.id, golferName });
+        toast(r.message, !r.ok);
+        if (r.ok) { await loadMyState(); render(); }
+      } catch (e) { toast(e.message, true); }
+    };
+  }
+}
+
+function renderMyHearnTab(el) {
+  if (!MY.season) {
+    el.innerHTML = '<div class="card"><p class="muted">' + esc(MY.failureMessage || 'No active season.') + '</p></div>';
+    return;
+  }
+
+  // Season-long fallback, not scoped to one week — options are the whole PGA
+  // Tour roster (via hearnPool from the server), plus anything already on
+  // the list, so a golfer never silently drops off just because they're not
+  // in this week's field.
+  const pool = MY.hearnPool && MY.hearnPool.length ? MY.hearnPool : (MY.pickTarget ? MY.pickTarget.field : []);
+  const hearnExtras = MY.hearnList.map((h) => h.golferName);
+  const hearnSlotCount = Math.max(MY.hearnList.length + 3, 6);
+  const hearnRows = Array.from({ length: hearnSlotCount }, (_, i) => {
+    const existing = MY.hearnList[i];
+    return '<div class="row"><span class="muted" style="width:20px">' + (i + 1) + '.</span>' +
+      '<select data-hearn-slot="' + i + '" style="min-width:240px">' +
+      golferOptionsHtml(pool, hearnExtras, existing ? existing.golferName : '') +
+      '</select></div>';
+  }).join('');
+
+  el.innerHTML =
+    '<div class="card"><h2>Hearn Picks</h2>' +
+    '<p class="muted">Ordered fallback used automatically if you forget to pick a given week. Drawn from the full PGA Tour roster — this list is good for the whole season, not just the current tournament.</p>' +
+    hearnRows +
+    '<div class="row" style="margin-top:8px"><button class="act" id="myHearnGo">Save Hearn Picks</button></div></div>';
+
+  $('myHearnGo').onclick = async () => {
+    const golferNames = el.querySelectorAll('[data-hearn-slot]');
+    const names = Array.from(golferNames).map((s) => s.value).filter((v) => v);
+    try {
+      await api('/api/my/hearn', 'PUT', { golferNames: names });
+      toast('Hearn Picks saved'); await loadMyState(); render();
+    } catch (e) { toast(e.message, true); }
+  };
+}
+
+// ---- admin tabs -------------------------------------------------------------
+
 function renderDash(el) {
   const q = REPORT.quarterStandings || {};
-  const sp = REPORT.sidePot1, gr = REPORT.greller, tocc = REPORT.tocc;
   el.innerHTML =
-    '<div class="card"><h2>Season Standings</h2>' + standingsTable(REPORT.seasonStandings) + '</div>' +
+    '<div class="card"><h2>Season Standings</h2>' + standingsTable(REPORT.seasonStandings, REPORT) + '</div>' +
     '<div class="grid2">' + [1,2,3,4].map((n) =>
-      '<div class="card"><h2>Quarter ' + n + '</h2>' + standingsTable(q[n]) + '</div>').join('') + '</div>' +
-    '<div class="grid2">' +
-      '<div class="card"><h2>Side Pot 1 — Most Top 10s</h2>' +
-        '<p class="stat">' + money(sp.balance) + '</p>' +
-        '<p class="muted">Funded by ' + money(SEASON.missedCutFine) + ' missed-cut fines</p>' +
-        '<table><tr><th>Participant</th><th class="num">T10</th><th class="num">T5</th><th class="num">Wins</th></tr>' +
-        sp.tallies.sort((a,b) => b.top10s - a.top10s || b.top5s - a.top5s || b.wins - a.wins)
-          .map((t) => '<tr><td>' + esc(pname(t.participantId)) + '</td><td class="num">' + t.top10s +
-            '</td><td class="num">' + t.top5s + '</td><td class="num">' + t.wins + '</td></tr>').join('') +
-        '</table></div>' +
-      '<div class="card"><h2>The Greller</h2>' +
-        '<p class="stat">' + money(gr.currentBalance) + '</p>' +
-        '<p class="muted">' + money(SEASON.grellerWeeklyContribution) + '/participant/week; won by a unique pick of the winner</p>' +
-        '<table><tr><th>Week</th><th>Winner</th><th class="num">Pot after</th></tr>' +
-        gr.history.map((w) => {
-          const t = REPORT.tournaments.find((x) => x.id === w.tournamentId);
-          return '<tr><td>' + esc(t ? t.name : w.tournamentId) + '</td><td>' +
-            (w.winnerParticipantId ? esc(pname(w.winnerParticipantId)) : '<span class="muted">rollover</span>') +
-            '</td><td class="num">' + money(w.potBalanceAfter) + '</td></tr>';
-        }).join('') + '</table></div>' +
-      '<div class="card"><h2>TOCC Side Action</h2>' +
-        '<p class="muted">' + money(SEASON.toccStake) + '/wk, ' + money(SEASON.toccStakeIfWinner) + ' if the pick wins outright</p>' +
-        '<table><tr><th>Participant</th><th class="num">Net</th></tr>' +
-        Object.entries(tocc.netByParticipant).sort((a,b) => b[1] - a[1])
-          .map(([id, net]) => '<tr><td>' + esc(pname(id)) + '</td><td class="num" style="color:' +
-            (net >= 0 ? 'var(--accent)' : 'var(--bad)') + '">' + money(net) + '</td></tr>').join('') +
-        '</table></div>' +
-    '</div>';
+      '<div class="card"><h2>Quarter ' + n + '</h2>' + standingsTable(q[n], REPORT) + '</div>').join('') + '</div>' +
+    '<div class="grid2">' + potsCardsHtml(REPORT, SEASON, REPORT.tournaments) + '</div>';
 }
 
 async function renderPicks(el) {
@@ -320,7 +537,7 @@ function renderRoster(el) {
   const inSeason = new Set(REPORT.roster.map((p) => p.id));
   const tocc = new Set(REPORT.toccMembers.map((e) => e.participantId));
   el.innerHTML =
-    '<div class="card"><h2>Add participant</h2><div class="row">' +
+    '<div class="card"><h2>Add participant</h2><p class="muted">They\\'ll be emailed a link to set their own password.</p><div class="row">' +
       '<input id="npName" placeholder="Name"><input id="npEmail" placeholder="email@example.com">' +
       '<button class="act" id="npGo">Add</button></div></div>' +
     '<div class="card"><h2>Season roster</h2><table>' +
@@ -333,7 +550,7 @@ function renderRoster(el) {
   $('npGo').onclick = async () => {
     try {
       await api('/api/participants', 'POST', { name: $('npName').value, email: $('npEmail').value });
-      toast('Participant added'); STATE = await api('/api/state'); render();
+      toast('Participant added and emailed a password-setup link'); STATE = await api('/api/state'); render();
     } catch (e) { toast(e.message, true); }
   };
   const save = async (id, inS, isT) => {
@@ -379,28 +596,28 @@ function renderSeasons(el) {
     try {
       await api('/api/test-league', 'POST',
         { copyRosterFromSeasonId: ($('tlCopy').checked && SEASON) ? SEASON.id : null });
-      toast('Test league created'); boot();
+      toast('Test league created'); bootAdmin();
     } catch (e) { toast(e.message, true); }
   };
   $('lgGo').onclick = async () => {
-    try { await api('/api/leagues', 'POST', { name: $('lgName').value }); toast('League created'); boot(); }
+    try { await api('/api/leagues', 'POST', { name: $('lgName').value }); toast('League created'); bootAdmin(); }
     catch (e) { toast(e.message, true); }
   };
   $('snGo').onclick = async () => {
     try {
       await api('/api/seasons', 'POST', { leagueId: $('snLg').value, year: Number($('snYr').value) });
-      toast('Season created'); boot();
+      toast('Season created'); bootAdmin();
     } catch (e) { toast(e.message, true); }
   };
   el.querySelectorAll('[data-roll]').forEach((b) => {
     b.onclick = async () => {
-      try { await api('/api/seasons/' + b.dataset.roll + '/roll-over', 'POST', {}); toast('New season created'); boot(); }
+      try { await api('/api/seasons/' + b.dataset.roll + '/roll-over', 'POST', {}); toast('New season created'); bootAdmin(); }
       catch (e) { toast(e.message, true); }
     };
   });
   el.querySelectorAll('[data-st]').forEach((s) => {
     s.onchange = async () => {
-      try { await api('/api/seasons/' + s.dataset.st + '/status', 'POST', { status: s.value }); toast('Status updated'); boot(); }
+      try { await api('/api/seasons/' + s.dataset.st + '/status', 'POST', { status: s.value }); toast('Status updated'); bootAdmin(); }
       catch (e) { toast(e.message, true); }
     };
   });

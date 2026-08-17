@@ -44,6 +44,23 @@ export interface Participant {
   id: string;
   name: string;
   email: string;
+  /** Unlocks the admin views on the web app. Defaults to false/undefined for everyone else. */
+  isAdmin?: boolean;
+  /** Null until they've set a password via the emailed set-password link. */
+  passwordHash?: string | null;
+  /**
+   * ISO datetime of the last password set/change. Embedded in signed session
+   * cookies so changing your password invalidates every other active session
+   * without needing a server-side session table.
+   */
+  passwordSetAt?: string | null;
+}
+
+/** A one-time link for setting or resetting a participant's password, emailed to them. */
+export interface PasswordResetToken {
+  token: string;
+  participantId: string;
+  expiresAt: string; // ISO datetime
 }
 
 /**
@@ -82,7 +99,7 @@ export interface Golfer {
 }
 
 /** How a pick came to exist. Hearn picks are auto-assigned at the deadline. */
-export type PickSource = "email" | "admin" | "hearn";
+export type PickSource = "web" | "admin" | "hearn";
 
 export interface Pick {
   participantId: string;
