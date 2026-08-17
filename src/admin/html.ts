@@ -394,17 +394,18 @@ function availabilityLineHtml(label, a) {
 }
 
 function golferBoxHtml(g, isCurrent, currentQuarter) {
+  const isUsed = Boolean(g.usedInTournament);
   return '<div class="gbox' + (isCurrent ? ' current' : '') + '" data-gname="' + esc(g.name) + '">' +
     '<div class="gbox-head" data-toggle="' + esc(g.name) + '">' +
-      '<span class="gbox-name">' + esc(g.name) + '</span>' +
+      '<span class="gbox-name"' + (isUsed ? ' style="text-decoration:line-through;color:var(--muted)"' : '') + '>' + esc(g.name) + '</span>' +
       '<span class="muted">' + esc(oddsLabel(g.odds)) + '</span>' +
       (isCurrent ? '<span class="pill" style="color:var(--accent);border-color:var(--accent)">current pick</span>' : '') +
-      (g.usedByMe ? '<span class="pill" style="color:var(--bad);border-color:var(--bad)">used</span>' : '') +
+      (isUsed ? '<span class="pill" style="color:var(--bad);border-color:var(--bad)">used</span>' : '') +
       '<span class="muted" style="margin-left:auto">' + g.availability.available + '/' + g.availability.total + ' avail</span>' +
     '</div>' +
     '<div class="gbox-body">' +
-      (g.usedByMe
-        ? '<p class="muted">You already used this golfer earlier this season — one-and-done.</p>'
+      (isUsed
+        ? '<p class="muted">You already used this golfer for the ' + esc(g.usedInTournament) + ' — one-and-done.</p>'
         : '<button class="act" data-choose="' + esc(g.name) + '">' + (isCurrent ? 'Keep this pick' : 'Choose this player') + '</button>') +
       '<h4>Recent Results (last 5 starts)</h4>' + golferHistoryRows(g.recentStarts) +
       '<h4>Course History</h4>' + golferHistoryRows(g.courseHistory) +

@@ -14,7 +14,7 @@ import {
 } from "../store/store.js";
 import { buildSeasonReport } from "../core/report.js";
 import { computeGolferAvailability, getAvailability } from "../core/availability.js";
-import { blockingReasons, usedGolferIds, validatePick } from "../core/oneAndDone.js";
+import { blockingReasons, validatePick } from "../core/oneAndDone.js";
 import { applyHearnFallbacks, findDeadHearnEntries } from "../core/hearn.js";
 import { createSeason, createTestLeague, startNewSeason } from "../core/season.js";
 import { openTournament, resolveActiveSeasonForParticipant } from "../core/emailRouting.js";
@@ -328,10 +328,17 @@ const routes: Route[] = [
       const aheadQuarterAvailability =
         pickTarget && currentQuarter ? computeGolferAvailability(seasonPicksList, aheadQuarterIds, pickTarget.id) : new Map();
 
-      // Already used this season (excluding this week's own pick, which is
-      // the current selection, not a blocked one).
-      const myUsedGolferIds = usedGolferIds(me!.id, season.id, data.picks);
-      if (existingPick) myUsedGolferIds.delete(existingPick.golferId);
+      // Already used this season -> which tournament, so the pick page can
+      // say where (excluding this week's own pick, which is the current
+      // selection, not a blocked one). One-and-done guarantees at most one
+      // prior tournament per golfer per participant.
+      const usedInTournamentByGolfer = new Map<string, string>();
+      for (const p of data.picks) {
+        if (p.participantId !== me!.id || p.seasonId !== season.id) continue;
+        if (pickTarget && p.tournamentId === pickTarget.id) continue;
+        const tournamentName = data.tournaments.find((t) => t.id === p.tournamentId)?.name ?? p.tournamentId;
+        usedInTournamentByGolfer.set(p.golferId, tournamentName);
+      }
 
       const form =
         pickTarget?.externalEventId && golferFormCache ? await golferFormCache.get(Number(pickTarget.externalEventId)) : null;
@@ -363,7 +370,7 @@ const routes: Route[] = [
                   return {
                     name,
                     odds: odds?.get(name) ?? null,
-                    usedByMe: myUsedGolferIds.has(id),
+                    usedInTournament: usedInTournamentByGolfer.get(id) ?? null,
                     availability: getAvailability(rosterAvailability, id, rosterIds.length),
                     aheadOverallAvailability: getAvailability(aheadOverallAvailability, id, aheadOverallIds.length),
                     aheadQuarterAvailability: currentQuarter
