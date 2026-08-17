@@ -138,9 +138,9 @@ const pname = (id, report) => (report && report.nameByParticipantId[id]) || id;
 const oddsLabel = (odds) => (odds == null ? '' : ' (' + (odds > 0 ? '+' : '') + odds + ')');
 // League-wide "how contested is this golfer" — % of the roster who have NOT
 // used them in a previous week. Only shown when the field actually carries
-// it (today: just the current-week pick dropdown), and skipped at 100% —
-// untouched is the common case and doesn't need calling out.
-const availLabel = (pct) => (pct == null || pct >= 100 ? '' : ' · ' + pct + '% avail');
+// it (today: just the current-week pick dropdown) — shown at every value,
+// 100% included, so it's visible at a glance that the number is live.
+const availLabel = (pct) => (pct == null ? '' : ' · ' + pct + '% avail');
 
 /**
  * Builds a golfer <select>'s options from the current field (with odds when
