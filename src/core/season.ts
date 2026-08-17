@@ -1,4 +1,4 @@
-import type { League, Season, SeasonEntry, Tournament } from "../types.js";
+import type { League, PayoutPlace, Season, SeasonEntry, Tournament } from "../types.js";
 
 /** The dollar rules that can vary per season (a test league can play for $0). */
 export interface SeasonRules {
@@ -6,13 +6,31 @@ export interface SeasonRules {
   missedCutFine: number;
   toccStake: number;
   toccStakeIfWinner: number;
+  buyIn: number;
+  overallPayouts: PayoutPlace[];
+  quarterPayouts: PayoutPlace[];
 }
 
+// This league's established buy-in/payout structure — 20 players @ $750
+// (a $15,000 pot): overall pays $4,750 / $2,250 / $1,000 for 1st/2nd/3rd,
+// and each of the 4 quarters pays $1,250 / $500 for 1st/2nd. Stored as % of
+// the total pot (buyIn * roster size) so it scales if the roster size ever
+// changes while preserving these exact ratios.
 export const DEFAULT_SEASON_RULES: SeasonRules = {
   grellerWeeklyContribution: 10,
   missedCutFine: 50,
   toccStake: 100,
   toccStakeIfWinner: 200,
+  buyIn: 750,
+  overallPayouts: [
+    { place: 1, pct: 4750 / 15000 },
+    { place: 2, pct: 2250 / 15000 },
+    { place: 3, pct: 1000 / 15000 },
+  ],
+  quarterPayouts: [
+    { place: 1, pct: 1250 / 15000 },
+    { place: 2, pct: 500 / 15000 },
+  ],
 };
 
 export interface CreateSeasonInput {
@@ -87,6 +105,9 @@ export function startNewSeason(
       missedCutFine: previousSeason.missedCutFine,
       toccStake: previousSeason.toccStake,
       toccStakeIfWinner: previousSeason.toccStakeIfWinner,
+      buyIn: previousSeason.buyIn,
+      overallPayouts: previousSeason.overallPayouts,
+      quarterPayouts: previousSeason.quarterPayouts,
     },
   });
   const entries = rosterFrom.map((entry) => ({

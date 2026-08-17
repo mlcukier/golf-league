@@ -17,6 +17,9 @@ const season: Season = {
   missedCutFine: 50,
   toccStake: 100,
   toccStakeIfWinner: 200,
+  buyIn: 0,
+  overallPayouts: [],
+  quarterPayouts: [],
 };
 const participant: Participant = { id: "p1", name: "Mark", email: "mark@example.com" };
 const golfer: Golfer = { id: "g1", name: "Scottie Scheffler" };

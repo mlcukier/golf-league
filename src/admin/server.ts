@@ -593,6 +593,38 @@ const routes: Route[] = [
       return { ok: true };
     },
   },
+  {
+    /**
+     * Updates any subset of a season's dollar rules — Greller/Side
+     * Pot/TOCC settings plus buyIn and the overall/quarter payout
+     * schedules. overallPayouts/quarterPayouts are sent as {place, pct}
+     * pairs (pct = a fraction of buyIn * roster size); the client converts
+     * whatever dollar amounts an admin types into that ratio using the
+     * roster size visible at save time, so the schedule itself stays a
+     * pure ratio that automatically rescales if the roster size changes.
+     */
+    method: "PUT",
+    pattern: /^\/api\/seasons\/([^/]+)\/rules$/,
+    auth: "admin",
+    handler: async ({ params, body, store }) => {
+      const rules: Record<string, unknown> = {};
+      for (const key of ["grellerWeeklyContribution", "missedCutFine", "toccStake", "toccStakeIfWinner", "buyIn"]) {
+        if (body[key] !== undefined) rules[key] = Number(body[key]);
+      }
+      for (const key of ["overallPayouts", "quarterPayouts"]) {
+        if (body[key] === undefined) continue;
+        rules[key] = (body[key] as { place: unknown; pct: unknown }[]).map((p) => ({
+          place: Number(p.place),
+          pct: Number(p.pct),
+        }));
+      }
+      await store.update((d) => {
+        const season = requireSeason(d, params[0]!);
+        Object.assign(season, rules);
+      });
+      return { ok: true };
+    },
+  },
 
   // ---- roster (admin) ----------------------------------------------------------
   {

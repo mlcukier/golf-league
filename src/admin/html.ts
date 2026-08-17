@@ -285,11 +285,17 @@ function render() {
 
 // ---- shared standings/pots rendering (used by My Picks and the admin Dashboard) ----
 
-function standingsTable(rows, report) {
+function standingsTable(rows, report, payoutRows) {
   if (!rows || !rows.length) return '<p class="muted">No results yet.</p>';
-  return '<table><tr><th>#</th><th>Participant</th><th class="num">Earnings</th></tr>' +
+  const payoutByParticipant = {};
+  (payoutRows || []).forEach((p) => { payoutByParticipant[p.participantId] = p.amount; });
+  const showPayout = (payoutRows || []).length > 0;
+  return '<table><tr><th>#</th><th>Participant</th><th class="num">Earnings</th>' +
+    (showPayout ? '<th class="num">Payout</th>' : '') + '</tr>' +
     rows.map((r, i) => '<tr><td>' + (i + 1) + '</td><td>' + esc(pname(r.participantId, report)) +
-      '</td><td class="num">' + money(r.totalEarnings) + '</td></tr>').join('') + '</table>';
+      '</td><td class="num">' + money(r.totalEarnings) + '</td>' +
+      (showPayout ? '<td class="num">' + (payoutByParticipant[r.participantId] ? money(payoutByParticipant[r.participantId]) : '') + '</td>' : '') +
+      '</tr>').join('') + '</table>';
 }
 
 function potsCardsHtml(report, season, tournaments) {
@@ -357,11 +363,14 @@ function renderMyPicksTab(el) {
     : '<p class="muted">No picks yet this season.</p>';
 
   const q = MY.report.quarterStandings || {};
+  const pot = MY.report.payouts || { totalPot: 0, overall: [], quarters: {} };
   el.innerHTML =
     pickCard +
-    '<div class="card"><h2>Season Standings</h2>' + standingsTable(MY.report.seasonStandings, MY.report) + '</div>' +
+    '<div class="card"><h2>Season Standings</h2>' +
+      (pot.totalPot ? '<p class="muted">Total pot: ' + money(pot.totalPot) + '</p>' : '') +
+      standingsTable(MY.report.seasonStandings, MY.report, pot.overall) + '</div>' +
     '<div class="grid2">' + [1,2,3,4].map((n) =>
-      '<div class="card"><h2>Quarter ' + n + '</h2>' + standingsTable(q[n], MY.report) + '</div>').join('') + '</div>' +
+      '<div class="card"><h2>Quarter ' + n + '</h2>' + standingsTable(q[n], MY.report, pot.quarters[n]) + '</div>').join('') + '</div>' +
     '<div class="grid2">' + potsCardsHtml(MY.report, MY.season, MY.tournaments) + '</div>' +
     '<div class="card"><h2>Your picks this season</h2>' + picksTable + '</div>';
 
@@ -419,10 +428,13 @@ function renderMyHearnTab(el) {
 
 function renderDash(el) {
   const q = REPORT.quarterStandings || {};
+  const pot = REPORT.payouts || { totalPot: 0, overall: [], quarters: {} };
   el.innerHTML =
-    '<div class="card"><h2>Season Standings</h2>' + standingsTable(REPORT.seasonStandings, REPORT) + '</div>' +
+    '<div class="card"><h2>Season Standings</h2>' +
+      (pot.totalPot ? '<p class="muted">Total pot: ' + money(pot.totalPot) + '</p>' : '') +
+      standingsTable(REPORT.seasonStandings, REPORT, pot.overall) + '</div>' +
     '<div class="grid2">' + [1,2,3,4].map((n) =>
-      '<div class="card"><h2>Quarter ' + n + '</h2>' + standingsTable(q[n], REPORT) + '</div>').join('') + '</div>' +
+      '<div class="card"><h2>Quarter ' + n + '</h2>' + standingsTable(q[n], REPORT, pot.quarters[n]) + '</div>').join('') + '</div>' +
     '<div class="grid2">' + potsCardsHtml(REPORT, SEASON, REPORT.tournaments) + '</div>';
 }
 
@@ -673,7 +685,35 @@ function renderRoster(el) {
 }
 
 function renderSeasons(el) {
+  const moneyRulesCard = (() => {
+    if (!SEASON || !REPORT) return '';
+    const pot = REPORT.payouts || { totalPot: 0 };
+    const dollarsPerPlace = (schedule) => schedule.slice().sort((a, b) => a.place - b.place)
+      .map((p) => Math.round(p.pct * pot.totalPot)).join('\\n');
+    const lg = STATE.leagues.find((l) => l.id === SEASON.leagueId) || {};
+    return '<div class="card"><h2>Money rules — ' + esc(lg.name || '') + ' ' + SEASON.year + '</h2>' +
+      '<p class="muted">Overall/Quarter payouts: dollar amount per place (1st first, one per line). Stored as a % of ' +
+      'the total pot (buy-in \\u00d7 roster size), so they auto-scale if the roster size changes — re-entered here in ' +
+      'today\\'s dollars against today\\'s roster of ' + REPORT.roster.length + '.</p>' +
+      '<div class="row">' +
+        '<label class="muted">Greller/wk<br><input id="mrGreller" type="number" value="' + SEASON.grellerWeeklyContribution + '" style="width:80px"></label>' +
+        '<label class="muted">Missed cut fine<br><input id="mrMC" type="number" value="' + SEASON.missedCutFine + '" style="width:80px"></label>' +
+        '<label class="muted">TOCC stake<br><input id="mrTocc" type="number" value="' + SEASON.toccStake + '" style="width:80px"></label>' +
+        '<label class="muted">TOCC if winner<br><input id="mrToccW" type="number" value="' + SEASON.toccStakeIfWinner + '" style="width:80px"></label>' +
+        '<label class="muted">Buy-in<br><input id="mrBuyIn" type="number" value="' + SEASON.buyIn + '" style="width:80px"></label>' +
+      '</div>' +
+      '<div class="row" style="margin-top:8px">' +
+        '<label class="muted">Overall payouts ($)<br><textarea id="mrOverall" style="width:120px;height:70px">' +
+          esc(dollarsPerPlace(SEASON.overallPayouts)) + '</textarea></label>' +
+        '<label class="muted">Quarter payouts ($, each quarter)<br><textarea id="mrQuarter" style="width:120px;height:70px">' +
+          esc(dollarsPerPlace(SEASON.quarterPayouts)) + '</textarea></label>' +
+      '</div>' +
+      '<p class="muted">Total pot right now: ' + money(pot.totalPot) + '</p>' +
+      '<div class="row" style="margin-top:8px"><button class="act" id="mrGo">Save money rules</button></div></div>';
+  })();
+
   el.innerHTML =
+    moneyRulesCard +
     '<div class="card"><h2>Spin up a test league</h2>' +
       '<p class="muted">Runs from today through the end of this year, fully isolated from real money.</p>' +
       '<div class="row"><label class="muted"><input type="checkbox" id="tlCopy" checked> copy current roster</label>' +
@@ -696,6 +736,28 @@ function renderSeasons(el) {
       '<input id="snYr" type="number" value="' + new Date().getFullYear() + '" style="width:100px">' +
       '<button class="act" id="snGo">Create season</button></div></div>';
 
+  if ($('mrGo')) {
+    $('mrGo').onclick = async () => {
+      const buyIn = Number($('mrBuyIn').value) || 0;
+      const rosterSize = REPORT.roster.length;
+      const pot = buyIn * rosterSize;
+      const toSchedule = (textareaId) => $(textareaId).value.split('\\n')
+        .map((line) => line.trim()).filter((line) => line.length > 0)
+        .map((line, i) => ({ place: i + 1, pct: pot > 0 ? Number(line) / pot : 0 }));
+      try {
+        await api('/api/seasons/' + SEASON.id + '/rules', 'PUT', {
+          grellerWeeklyContribution: Number($('mrGreller').value),
+          missedCutFine: Number($('mrMC').value),
+          toccStake: Number($('mrTocc').value),
+          toccStakeIfWinner: Number($('mrToccW').value),
+          buyIn,
+          overallPayouts: toSchedule('mrOverall'),
+          quarterPayouts: toSchedule('mrQuarter'),
+        });
+        toast('Money rules saved'); loadSeason();
+      } catch (e) { toast(e.message, true); }
+    };
+  }
   $('tlGo').onclick = async () => {
     try {
       await api('/api/test-league', 'POST',

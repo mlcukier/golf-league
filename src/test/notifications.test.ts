@@ -25,6 +25,9 @@ function baseData(overrides: Partial<LeagueData> = {}): LeagueData {
     missedCutFine: 50,
     toccStake: 100,
     toccStakeIfWinner: 200,
+    buyIn: 0,
+    overallPayouts: [],
+    quarterPayouts: [],
   };
   const p1: Participant = { id: "p1", name: "A", email: "a@example.com" };
   const p2: Participant = { id: "p2", name: "B", email: "b@example.com" };

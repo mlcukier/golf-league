@@ -12,6 +12,7 @@ import {
   type SidePot1Tally,
 } from "./sidePot1.js";
 import { computeTOCCWeek, type TOCCWeekResult } from "./tocc.js";
+import { distributePlacePayouts, type PayoutRow } from "./payouts.js";
 import { openTournament } from "./emailRouting.js";
 import {
   seasonPicks,
@@ -40,6 +41,13 @@ export interface SeasonReport {
     weeks: TOCCWeekResult[];
     /** Net dollars won (positive) or owed (negative) per TOCC participant. */
     netByParticipant: Record<string, number>;
+  };
+  payouts: {
+    /** buyIn * roster size. */
+    totalPot: number;
+    overall: PayoutRow[];
+    /** Quarter number (1-4) -> that quarter's payouts, same schedule applied independently to each. */
+    quarters: Record<number, PayoutRow[]>;
   };
   nameByParticipantId: Map<string, string>;
 }
@@ -100,10 +108,18 @@ export function buildSeasonReport(data: LeagueData, season: Season): SeasonRepor
     }
   }
 
+  const seasonStandings = computeSeasonStandings(picks, results);
+  const quarterStandings = computeQuarterlyStandings(picks, results, tournaments, boundaries);
+  const totalPot = season.buyIn * roster.length;
+  const quarterPayouts: Record<number, PayoutRow[]> = {};
+  for (const q of Object.keys(quarterStandings)) {
+    quarterPayouts[Number(q)] = distributePlacePayouts(quarterStandings[Number(q)]!, season.quarterPayouts, totalPot);
+  }
+
   return {
     season,
-    seasonStandings: computeSeasonStandings(picks, results),
-    quarterStandings: computeQuarterlyStandings(picks, results, tournaments, boundaries),
+    seasonStandings,
+    quarterStandings,
     sidePot1: {
       balance: computeSidePot1Balance(picks, results, rosterIds, playedTournamentIds, season.missedCutFine),
       tallies,
@@ -114,6 +130,11 @@ export function buildSeasonReport(data: LeagueData, season: Season): SeasonRepor
       currentBalance: grellerHistory.at(-1)?.potBalanceAfter ?? 0,
     },
     tocc: { weeks: toccWeeks, netByParticipant },
+    payouts: {
+      totalPot,
+      overall: distributePlacePayouts(seasonStandings, season.overallPayouts, totalPot),
+      quarters: quarterPayouts,
+    },
     nameByParticipantId: new Map(data.participants.map((p) => [p.id, p.nickname || p.name])),
   };
 }

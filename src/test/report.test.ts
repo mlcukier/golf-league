@@ -20,6 +20,9 @@ function baseData(overrides: Partial<LeagueData> = {}): LeagueData {
     missedCutFine: 50,
     toccStake: 100,
     toccStakeIfWinner: 200,
+    buyIn: 0,
+    overallPayouts: [],
+    quarterPayouts: [],
   };
   const participants: Participant[] = [
     { id: "p1", name: "A", email: "a@example.com" },
@@ -68,5 +71,61 @@ describe("buildSeasonReport — Greller", () => {
     // t1 rolled over (30) + t2 (the new open week) ante (30) = 60.
     expect(report.greller.history).toHaveLength(2);
     expect(report.greller.currentBalance).toBe(60);
+  });
+});
+
+describe("buildSeasonReport — payouts", () => {
+  it("computes the total pot from buyIn * roster size and pays overall places from season standings", () => {
+    const data = baseData({
+      seasons: [
+        {
+          ...baseData().seasons[0]!,
+          buyIn: 100,
+          overallPayouts: [
+            { place: 1, pct: 0.6 },
+            { place: 2, pct: 0.3 },
+          ],
+        },
+      ],
+      tournaments: [tournament("t1", 1)],
+      picks: [pick("p1", "t1", "g1"), pick("p2", "t1", "g2"), pick("p3", "t1", "g3")],
+      results: [result("t1", "g1", 300, 1), result("t1", "g2", 200, 2), result("t1", "g3", 0, null)],
+    });
+    const report = buildSeasonReport(data, data.seasons[0]!);
+    // 3-person roster * $100 = $300 pot. 60% -> p1 ($180), 30% -> p2 ($90), p3 gets nothing (unpaid place).
+    expect(report.payouts.totalPot).toBe(300);
+    expect(report.payouts.overall).toEqual([
+      { participantId: "p1", amount: 180 },
+      { participantId: "p2", amount: 90 },
+    ]);
+  });
+
+  it("applies the same quarter schedule independently to each quarter", () => {
+    const data = baseData({
+      seasons: [
+        {
+          ...baseData().seasons[0]!,
+          buyIn: 100,
+          quarterPayouts: [{ place: 1, pct: 0.1 }],
+        },
+      ],
+      tournaments: [tournament("t1", 1), tournament("t2", 2), tournament("t3", 3), tournament("t4", 4)],
+      picks: [
+        pick("p1", "t1", "g1"),
+        pick("p2", "t1", "g2"),
+        pick("p1", "t4", "g3"),
+        pick("p2", "t4", "g4"),
+      ],
+      results: [
+        result("t1", "g1", 1000, 1),
+        result("t1", "g2", 0, null),
+        result("t4", "g3", 0, null),
+        result("t4", "g4", 1000, 1),
+      ],
+    });
+    const report = buildSeasonReport(data, data.seasons[0]!);
+    // 3-person roster * $100 = $300 pot; 10% = $30 to each quarter's leader.
+    expect(report.payouts.quarters[1]).toEqual([{ participantId: "p1", amount: 30 }]);
+    expect(report.payouts.quarters[4]).toEqual([{ participantId: "p2", amount: 30 }]);
   });
 });

@@ -22,6 +22,9 @@ const season: Season = {
   missedCutFine: 50,
   toccStake: 100,
   toccStakeIfWinner: 200,
+  buyIn: 0,
+  overallPayouts: [],
+  quarterPayouts: [],
 };
 const testSeason: Season = { ...season, id: "s2026-test", leagueId: "lg-test" };
 const participant: Participant = { id: "p1", name: "Mark", email: "mark@example.com" };

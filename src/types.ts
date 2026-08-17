@@ -38,6 +38,20 @@ export interface Season {
   toccStake: number;
   /** TOCC stake when the winning pick also won the real tournament, in dollars. */
   toccStakeIfWinner: number;
+  /** Per-participant buy-in, in dollars — the total pot is buyIn * roster size, funding the overall + quarterly payouts (separate from the side pots). */
+  buyIn: number;
+  /** Payout schedule for the season-long standings, as a % of the total pot per place, 1st place first. Ties combine consecutive places and split evenly. */
+  overallPayouts: PayoutPlace[];
+  /** Payout schedule applied to EACH of the 4 quarters, as a % of the total pot per place, 1st place first. */
+  quarterPayouts: PayoutPlace[];
+}
+
+/** One paid finishing place in a payout schedule. */
+export interface PayoutPlace {
+  /** 1-based: 1 = first place. */
+  place: number;
+  /** Fraction (0-1) of the total pot this place pays — e.g. 0.15 for 15%. Stored as a ratio so payouts scale automatically if roster size changes. */
+  pct: number;
 }
 
 export interface Participant {

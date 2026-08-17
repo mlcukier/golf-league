@@ -1,6 +1,20 @@
 import { readFile, writeFile, rename, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import { emptyLeagueData, type LeagueData, type LeagueStore } from "./store.js";
+import { DEFAULT_SEASON_RULES } from "../core/season.js";
+
+/**
+ * Backfills any season-level dollar rule missing from an on-disk record (a
+ * season written before that field existed — e.g. buyIn/overallPayouts/
+ * quarterPayouts didn't exist until a later release) with its default,
+ * without touching any rule the season already has set explicitly. Runs on
+ * every read so old data never crashes buildSeasonReport on an
+ * undefined field; the backfilled values persist to disk the next time
+ * anything calls store.update.
+ */
+function migrateLeagueData(data: LeagueData): LeagueData {
+  return { ...data, seasons: data.seasons.map((s) => ({ ...DEFAULT_SEASON_RULES, ...s })) };
+}
 
 /**
  * JSON-file league store. Writes go through a temp file + rename so a crash
@@ -16,7 +30,8 @@ export class JsonLeagueStore implements LeagueStore {
   async read(): Promise<LeagueData> {
     try {
       const raw = await readFile(this.filePath, "utf8");
-      return { ...emptyLeagueData(), ...(JSON.parse(raw) as Partial<LeagueData>) };
+      const data = { ...emptyLeagueData(), ...(JSON.parse(raw) as Partial<LeagueData>) };
+      return migrateLeagueData(data);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return emptyLeagueData();
       throw error;
