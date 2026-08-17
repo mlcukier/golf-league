@@ -92,6 +92,12 @@ export const ADMIN_HTML = /* html */ `<!doctype html>
     <input id="nickInput" placeholder="Your nickname" style="width:140px">
     <button class="act ghost" id="nickGo">Save</button>
   </span>
+  <button class="act ghost" id="pwToggle">Change password</button>
+  <span class="row" id="pwBox" style="display:none">
+    <input id="pwCurrent" type="password" placeholder="Current password" autocomplete="current-password" style="width:150px">
+    <input id="pwNew" type="password" placeholder="New password (min 8 chars)" autocomplete="new-password" style="width:170px">
+    <button class="act" id="pwGo">Save</button>
+  </span>
   <nav>
     <button data-tab="mypicks" class="on">My Picks</button>
     <button data-tab="standings">Standings</button>
@@ -245,6 +251,21 @@ async function boot() {
     try {
       ME = { ...ME, ...(await api('/api/my/nickname', 'PUT', { nickname: $('nickInput').value })) };
       toast('Nickname saved'); await loadMyState(); if (ME.isAdmin) await loadSeason(); render();
+    } catch (e) { toast(e.message, true); }
+  };
+
+  $('pwToggle').onclick = () => {
+    const box = $('pwBox');
+    box.style.display = box.style.display === 'none' ? 'flex' : 'none';
+  };
+  $('pwGo').onclick = async () => {
+    const currentPassword = $('pwCurrent').value;
+    const newPassword = $('pwNew').value;
+    if (newPassword.length < 8) return toast('New password must be at least 8 characters', true);
+    try {
+      await api('/api/my/password', 'PUT', { currentPassword, newPassword });
+      $('pwCurrent').value = ''; $('pwNew').value = ''; $('pwBox').style.display = 'none';
+      toast('Password changed');
     } catch (e) { toast(e.message, true); }
   };
 

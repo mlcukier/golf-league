@@ -480,6 +480,40 @@ const routes: Route[] = [
       return { ok: true, nickname: nickname.length > 0 ? nickname : null };
     },
   },
+  {
+    /**
+     * Self-service password change while already logged in — the only other
+     * path today is the "forgot password" email-link flow, which requires
+     * logging out first. Re-issues the session cookie afterward (changing
+     * passwordSetAt invalidates every previously-signed cookie, this
+     * request's included) so the caller doesn't get logged out by their own change.
+     */
+    method: "PUT",
+    pattern: /^\/api\/my\/password$/,
+    auth: "auth",
+    handler: async ({ me, body, store, setCookie }) => {
+      const currentPassword = String(body.currentPassword ?? "");
+      const newPassword = String(body.newPassword ?? "");
+      if (newPassword.length < 8) throw new HttpError(400, "New password must be at least 8 characters");
+      if (!me!.passwordHash || !verifyPassword(currentPassword, me!.passwordHash)) {
+        throw new HttpError(401, "Current password is incorrect");
+      }
+
+      const passwordSetAt = new Date().toISOString();
+      const passwordHash = hashPassword(newPassword);
+      let updated: Participant | undefined;
+      await store.update((d) => {
+        const p = d.participants.find((x) => x.id === me!.id);
+        if (!p) return;
+        p.passwordHash = passwordHash;
+        p.passwordSetAt = passwordSetAt;
+        updated = p;
+      });
+      if (!updated) throw new HttpError(404, "Participant not found");
+      setCookie(updated);
+      return { ok: true };
+    },
+  },
 
   // ---- overview (admin) -------------------------------------------------------
   {
