@@ -7,19 +7,32 @@ function resultFor(pick: Pick, results: GolferResult[]): GolferResult | undefine
 }
 
 /**
- * Side Pot 1 is funded entirely by missed-cut fines: any participant whose
- * weekly pick misses the cut owes the fine into the pot. Only picks with a
- * posted result count (no result yet = tournament still in progress).
+ * Side Pot 1 is funded by missed-cut fines: any roster member whose weekly
+ * pick misses the cut owes the fine into the pot — and so does anyone with
+ * no pick at all that week (no self-pick, exhausted Hearn list), treated the
+ * same as a missed cut, since not fielding a golfer is strictly worse than
+ * fielding one who missed the cut. Only counted once a tournament's results
+ * are actually posted — playedTournamentIds is the set to charge for; a
+ * tournament that's still in progress charges nobody yet.
  */
 export function computeSidePot1Balance(
   picks: Pick[],
   results: GolferResult[],
+  rosterParticipantIds: string[],
+  playedTournamentIds: string[],
   missedCutFine: number = DEFAULT_MISSED_CUT_FINE
 ): number {
   let balance = 0;
-  for (const pick of picks) {
-    const result = resultFor(pick, results);
-    if (result && !result.madeCut) balance += missedCutFine;
+  for (const tournamentId of playedTournamentIds) {
+    for (const participantId of rosterParticipantIds) {
+      const pick = picks.find((p) => p.participantId === participantId && p.tournamentId === tournamentId);
+      if (!pick) {
+        balance += missedCutFine;
+        continue;
+      }
+      const result = resultFor(pick, results);
+      if (result && !result.madeCut) balance += missedCutFine;
+    }
   }
   return balance;
 }
@@ -32,8 +45,18 @@ export interface SidePot1Tally {
   wins: number;
 }
 
-/** Per-participant counts of missed cuts and top-10/top-5/win finishes among their own picks, for standings display. */
-export function computeSidePot1Tallies(picks: Pick[], results: GolferResult[]): SidePot1Tally[] {
+/**
+ * Per-participant counts of missed cuts (no pick at all counts as one, same
+ * as computeSidePot1Balance) and top-10/top-5/win finishes among their own
+ * picks, for standings display. Every roster member appears, even at
+ * all-zero, so the admin table always shows the full roster.
+ */
+export function computeSidePot1Tallies(
+  picks: Pick[],
+  results: GolferResult[],
+  rosterParticipantIds: string[],
+  playedTournamentIds: string[]
+): SidePot1Tally[] {
   const tallies = new Map<string, SidePot1Tally>();
   const get = (participantId: string) => {
     let t = tallies.get(participantId);
@@ -44,14 +67,23 @@ export function computeSidePot1Tallies(picks: Pick[], results: GolferResult[]): 
     return t;
   };
 
-  for (const pick of picks) {
-    const result = resultFor(pick, results);
-    if (!result) continue;
-    const t = get(pick.participantId);
-    if (!result.madeCut) t.missedCuts += 1;
-    if (result.isTop10) t.top10s += 1;
-    if (result.isTop5) t.top5s += 1;
-    if (result.isWin) t.wins += 1;
+  for (const participantId of rosterParticipantIds) get(participantId);
+
+  for (const tournamentId of playedTournamentIds) {
+    for (const participantId of rosterParticipantIds) {
+      const t = get(participantId);
+      const pick = picks.find((p) => p.participantId === participantId && p.tournamentId === tournamentId);
+      if (!pick) {
+        t.missedCuts += 1;
+        continue;
+      }
+      const result = resultFor(pick, results);
+      if (!result) continue;
+      if (!result.madeCut) t.missedCuts += 1;
+      if (result.isTop10) t.top10s += 1;
+      if (result.isTop5) t.top5s += 1;
+      if (result.isWin) t.wins += 1;
+    }
   }
 
   return [...tallies.values()];

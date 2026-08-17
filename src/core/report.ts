@@ -59,7 +59,9 @@ export function buildSeasonReport(data: LeagueData, season: Season): SeasonRepor
   const boundaries =
     tournaments.length >= 4 ? buildEqualQuarterBoundaries(tournaments) : [];
 
-  const tallies = computeSidePot1Tallies(picks, results);
+  const rosterIds = roster.map((p) => p.id);
+  const playedTournamentIds = tournaments.filter((t) => results.some((r) => r.tournamentId === t.id)).map((t) => t.id);
+  const tallies = computeSidePot1Tallies(picks, results, rosterIds, playedTournamentIds);
 
   // The Greller's weekly ante is owed the moment a week opens, not once
   // results come in — the whole roster is on the hook for it whether or not
@@ -78,7 +80,7 @@ export function buildSeasonReport(data: LeagueData, season: Season): SeasonRepor
   );
 
   const toccWeeks = tournaments
-    .filter((t) => results.some((r) => r.tournamentId === t.id))
+    .filter((t) => playedTournamentIds.includes(t.id))
     .map((t) =>
       computeTOCCWeek(
         t.id,
@@ -103,7 +105,7 @@ export function buildSeasonReport(data: LeagueData, season: Season): SeasonRepor
     seasonStandings: computeSeasonStandings(picks, results),
     quarterStandings: computeQuarterlyStandings(picks, results, tournaments, boundaries),
     sidePot1: {
-      balance: computeSidePot1Balance(picks, results, season.missedCutFine),
+      balance: computeSidePot1Balance(picks, results, rosterIds, playedTournamentIds, season.missedCutFine),
       tallies,
       leaders: determineSidePot1Winners(tallies),
     },
