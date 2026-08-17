@@ -13,6 +13,7 @@ import {
   type LeagueData,
 } from "../store/store.js";
 import { buildSeasonReport } from "../core/report.js";
+import { computeGolferAvailability } from "../core/availability.js";
 import { blockingReasons, validatePick } from "../core/oneAndDone.js";
 import { applyHearnFallbacks, findDeadHearnEntries } from "../core/hearn.js";
 import { createSeason, createTestLeague, startNewSeason } from "../core/season.js";
@@ -300,6 +301,13 @@ const routes: Route[] = [
         : undefined;
 
       const odds = pickTarget && oddsCache ? oddsForTournament(await oddsCache.get(), pickTarget.name) : null;
+      const availability = pickTarget
+        ? computeGolferAvailability(
+            seasonPicks(data, season.id),
+            seasonRoster(data, season.id).map((p) => p.id),
+            pickTarget.id
+          )
+        : new Map<string, number>();
 
       // The Hearn list is a season-long fallback, not scoped to one week —
       // its picker draws from the whole PGA Tour roster, not just whoever's
@@ -324,7 +332,7 @@ const routes: Route[] = [
               field: [...tournamentField(data, pickTarget.id)]
                 .map((id) => {
                   const name = golferName(id);
-                  return { name, odds: odds?.get(name) ?? null };
+                  return { name, odds: odds?.get(name) ?? null, availabilityPct: availability.get(id) ?? 100 };
                 })
                 .sort((a, b) => a.name.localeCompare(b.name)),
             }

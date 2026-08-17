@@ -136,6 +136,11 @@ const money = (n) => '$' + Math.round(n).toLocaleString();
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const pname = (id, report) => (report && report.nameByParticipantId[id]) || id;
 const oddsLabel = (odds) => (odds == null ? '' : ' (' + (odds > 0 ? '+' : '') + odds + ')');
+// League-wide "how contested is this golfer" — % of the roster who have NOT
+// used them in a previous week. Only shown when the field actually carries
+// it (today: just the current-week pick dropdown), and skipped at 100% —
+// untouched is the common case and doesn't need calling out.
+const availLabel = (pct) => (pct == null || pct >= 100 ? '' : ' · ' + pct + '% avail');
 
 /**
  * Builds a golfer <select>'s options from the current field (with odds when
@@ -155,7 +160,7 @@ function golferOptionsHtml(field, extraNames, selectedName, usedNames) {
     '<option value="">—</option>' +
     pool.map((g) => {
       const isUsed = used.has(g.name) && g.name !== selectedName;
-      const label = esc(g.name) + esc(oddsLabel(g.odds)) + (isUsed ? ' (used)' : '');
+      const label = esc(g.name) + esc(oddsLabel(g.odds)) + esc(availLabel(g.availabilityPct)) + (isUsed ? ' (used)' : '');
       return '<option value="' + esc(g.name) + '"' +
         (g.name === selectedName ? ' selected' : '') +
         (isUsed ? ' disabled style="text-decoration:line-through;color:var(--muted)"' : '') +
