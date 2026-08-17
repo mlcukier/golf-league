@@ -334,7 +334,7 @@ function standingsTable(rows, report, payoutRows) {
       '</tr>').join('') + '</table>';
 }
 
-function potsCardsHtml(report, season, tournaments) {
+function potsCardsHtml(report, season, tournaments, showTocc) {
   const sp = report.sidePot1, gr = report.greller, tocc = report.tocc;
   return (
     '<div class="card"><h2>Side Pot — Most Top 10s</h2>' +
@@ -358,13 +358,15 @@ function potsCardsHtml(report, season, tournaments) {
           '</td><td class="num" style="color:' + (amount < 0 ? 'var(--accent)' : 'inherit') + '">' + money(amount) +
           '</td><td class="num">' + money(w.potBalanceAfter) + '</td></tr>';
       }).join('') + '</table></div>' +
-    '<div class="card"><h2>TOCC Side Action</h2>' +
-      '<p class="muted">' + money(season.toccStake) + '/wk, ' + money(season.toccStakeIfWinner) + ' if the pick wins outright</p>' +
-      '<table><tr><th>Participant</th><th class="num">Net</th></tr>' +
-      Object.entries(tocc.netByParticipant).sort((a,b) => b[1] - a[1])
-        .map(([id, net]) => '<tr><td>' + esc(pname(id, report)) + '</td><td class="num" style="color:' +
-          (net >= 0 ? 'var(--accent)' : 'var(--bad)') + '">' + money(net) + '</td></tr>').join('') +
-      '</table></div>'
+    (showTocc
+      ? '<div class="card"><h2>TOCC Side Action</h2>' +
+        '<p class="muted">' + money(season.toccStake) + '/wk, ' + money(season.toccStakeIfWinner) + ' if the pick wins outright</p>' +
+        '<table><tr><th>Participant</th><th class="num">Net</th></tr>' +
+        Object.entries(tocc.netByParticipant).sort((a,b) => b[1] - a[1])
+          .map(([id, net]) => '<tr><td>' + esc(pname(id, report)) + '</td><td class="num" style="color:' +
+            (net >= 0 ? 'var(--accent)' : 'var(--bad)') + '">' + money(net) + '</td></tr>').join('') +
+        '</table></div>'
+      : '')
   );
 }
 
@@ -391,7 +393,7 @@ function renderStandingsTab(el) {
       standingsTable(MY.report.seasonStandings, MY.report, pot.overall) + '</div>' +
     '<div class="grid2">' + [1,2,3,4].map((n) =>
       '<div class="card"><h2>Quarter ' + n + '</h2>' + standingsTable(q[n], MY.report, pot.quarters[n]) + '</div>').join('') + '</div>' +
-    '<div class="grid2">' + potsCardsHtml(MY.report, MY.season, MY.tournaments) + '</div>' +
+    '<div class="grid2">' + potsCardsHtml(MY.report, MY.season, MY.tournaments, ME.id in MY.report.tocc.netByParticipant) + '</div>' +
     '<div class="card"><h2>Your picks this season</h2>' + picksTable + '</div>';
 }
 
