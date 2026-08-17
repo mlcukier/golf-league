@@ -81,8 +81,24 @@ describe("computeTOCCWeek", () => {
     expect(week.payments.every((p) => p.amount === 20)).toBe(true);
   });
 
-  it("produces no payments when nobody in the subgroup has a pick", () => {
+  it("ranks a sole no-pick member at $0 rather than excluding them — no payments since they're also the only one", () => {
     const week = computeTOCCWeek("t1", ["px"], picks, []);
-    expect(week).toEqual({ tournamentId: "t1", rankings: [], winners: [], secondPlace: [], payments: [] });
+    expect(week.rankings).toEqual([{ participantId: "px", golferId: null, earnings: 0 }]);
+    expect(week.winners).toEqual(["px"]);
+    expect(week.payments).toEqual([]);
+  });
+
+  it("charges a no-pick member the stake like anyone else who didn't win or place", () => {
+    const results = [
+      result("t1", "g1", 900, 2),
+      result("t1", "g2", 500, 5),
+      result("t1", "g3", 100, 20),
+      // g4/p4 has no result posted — irrelevant, since p5 below has no pick at all.
+      result("t1", "g4", 0, null),
+    ];
+    const week = computeTOCCWeek("t1", [...members, "p5"], picks, results);
+    expect(week.rankings).toContainEqual({ participantId: "p5", golferId: null, earnings: 0 });
+    expect(week.winners).toEqual(["p1"]);
+    expect(week.payments).toContainEqual({ from: "p5", to: "p1", amount: 100 });
   });
 });

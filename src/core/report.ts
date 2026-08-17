@@ -12,6 +12,7 @@ import {
   type SidePot1Tally,
 } from "./sidePot1.js";
 import { computeTOCCWeek, type TOCCWeekResult } from "./tocc.js";
+import { openTournament } from "./emailRouting.js";
 import {
   seasonPicks,
   seasonResults,
@@ -60,9 +61,16 @@ export function buildSeasonReport(data: LeagueData, season: Season): SeasonRepor
 
   const tallies = computeSidePot1Tallies(picks, results);
 
+  // The Greller's weekly ante is owed the moment a week opens, not once
+  // results come in — the whole roster is on the hook for it whether or not
+  // everyone actually got a pick in, so "results not posted yet" isn't a
+  // reason to hide that week's contribution from the running pot. Only
+  // weeks strictly after the current open one (not yet under way) are
+  // excluded.
+  const open = openTournament(data, season.id);
+  const grellerTournaments = open ? tournaments.filter((t) => t.sequence <= open.sequence) : tournaments;
   const grellerHistory = computeGrellerHistory(
-    // Only weeks that have actually been played contribute to the pot.
-    tournaments.filter((t) => results.some((r) => r.tournamentId === t.id)),
+    grellerTournaments,
     picks,
     results,
     roster.length,

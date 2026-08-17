@@ -10,7 +10,8 @@ export interface TOCCStakes {
 
 export interface TOCCRankingRow {
   participantId: string;
-  golferId: string;
+  /** Null when the participant had no pick at all that week — they still owe the stake like anyone else who didn't win/place. */
+  golferId: string | null;
   earnings: number;
 }
 
@@ -37,6 +38,13 @@ export interface TOCCWeekResult {
  * doubles to $200/person if the winning pick's golfer actually won the real
  * tournament that week (not just best-in-subgroup).
  *
+ * A subgroup member with no pick at all that week (no self-pick, no valid
+ * Hearn fallback) is still ranked — at $0 earnings, same as anyone who
+ * missed the cut — because being on the TOCC roster is what creates the
+ * wager, not whether a pick actually landed. They can only ever be a payer
+ * (a $0 week can't beat anyone who made the cut) unless the whole subgroup
+ * is at $0, in which case everyone ties for 1st and no money moves.
+ *
  * Tie handling (not specified by the league rules as given): a tie for 1st
  * splits the collected stake evenly across the tied winners; a tie for 2nd
  * means everyone in that tie breaks even.
@@ -55,11 +63,10 @@ export function computeTOCCWeek(
       const pick = weekPicks.find(
         (p) => p.participantId === participantId && p.tournamentId === tournamentId
       );
-      if (!pick) return null;
+      if (!pick) return { participantId, golferId: null, earnings: 0 };
       const result = resultByGolfer.get(pick.golferId);
       return { participantId, golferId: pick.golferId, earnings: result?.earnings ?? 0 };
     })
-    .filter((r): r is TOCCRankingRow => r !== null)
     .sort((a, b) => b.earnings - a.earnings);
 
   if (rankings.length === 0) {
@@ -74,7 +81,7 @@ export function computeTOCCWeek(
       : [];
 
   const winningGolferId = rankings[0]!.golferId;
-  const wonRealTournament = resultByGolfer.get(winningGolferId)?.isWin ?? false;
+  const wonRealTournament = winningGolferId ? (resultByGolfer.get(winningGolferId)?.isWin ?? false) : false;
   const stake = wonRealTournament ? stakes.stakeIfWinner : stakes.stake;
 
   const payers = rankings
