@@ -450,12 +450,19 @@ const routes: Route[] = [
       const data = await store.read();
       const season = requireSeason(data, params[0]!);
       const report = buildSeasonReport(data, season);
+      const tournaments = seasonTournaments(data, season.id);
       return {
         ...report,
         nameByParticipantId: Object.fromEntries(report.nameByParticipantId),
         roster: seasonRoster(data, season.id),
         toccMembers: data.seasonEntries.filter((e) => e.seasonId === season.id && e.isTOCCMember),
-        tournaments: seasonTournaments(data, season.id),
+        tournaments,
+        // Tournament id -> field golfer names, for the admin pick-override dropdown.
+        fields: Object.fromEntries(
+          tournaments.map((t) => [t.id, [...tournamentField(data, t.id)].map((gid) => golferName(data, gid)).sort()])
+        ),
+        // Every golfer known to the app, for the admin Hearn-pick dropdown (a season-long list, not this week's field).
+        golfers: data.golfers.map((g) => g.name).sort(),
       };
     },
   },

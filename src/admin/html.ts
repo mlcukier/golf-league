@@ -433,7 +433,7 @@ async function renderPicks(el) {
   el.innerHTML =
     '<div class="card"><h2>Enter / override a pick</h2><div class="row">' +
       '<select id="pkT">' + tOpts + '</select><select id="pkP">' + pOpts + '</select>' +
-      '<input id="pkG" placeholder="Golfer name">' +
+      '<select id="pkG" style="min-width:200px"></select>' +
       '<label class="muted"><input type="checkbox" id="pkF"> force (deadline/field only)</label>' +
       '<button class="act" id="pkGo">Save pick</button>' +
     '</div><p class="muted">One-and-done can never be forced — a repeat golfer is always rejected.</p></div>' +
@@ -450,6 +450,13 @@ async function renderPicks(el) {
           '</td><td>' + esc(p.golferName) + '</td><td class="' + (p.source === 'hearn' ? 'hearn' : 'muted') +
           '">' + esc(p.source) + '</td></tr>';
       }).join('') + '</table></div>';
+
+  const refreshPkG = () => {
+    const names = (REPORT.fields[$('pkT').value] || []).map((n) => ({ name: n, odds: null }));
+    $('pkG').innerHTML = golferOptionsHtml(names, [], '');
+  };
+  refreshPkG();
+  $('pkT').onchange = refreshPkG;
 
   $('pkGo').onclick = async () => {
     try {
@@ -480,28 +487,63 @@ async function renderHearn(el) {
   const list = await api('/api/seasons/' + SEASON.id + '/hearn');
   const byP = {};
   list.forEach((h) => { (byP[h.participantId] = byP[h.participantId] || []).push(h); });
-  el.innerHTML = '<div class="card"><h2>Hearn lists</h2><p class="muted">' +
-    'Ordered fallback used when someone forgets to pick. Struck-through golfers are already used this season and will be skipped.</p></div>' +
+  Object.values(byP).forEach((hs) => hs.sort((a, b) => a.rank - b.rank));
+
+  const pOpts = REPORT.roster.map((p) => '<option value="' + p.id + '">' + esc(p.name) + '</option>').join('');
+  const golferPool = (REPORT.golfers || []).map((n) => ({ name: n, odds: null }));
+
+  el.innerHTML =
+    '<div class="card"><h2>Set a Hearn pick</h2><p class="muted">Ordered fallback used when someone forgets to pick — picks a slot for one participant at a time. Struck-through golfers below are already used this season and will be skipped.</p>' +
+      '<div class="row">' +
+        '<select id="hnP">' + pOpts + '</select>' +
+        '<select id="hnSlot"></select>' +
+        '<select id="hnG" style="min-width:200px"></select>' +
+        '<button class="act" id="hnGo">Save</button>' +
+      '</div></div>' +
     REPORT.roster.map((p) => {
-      const hs = (byP[p.id] || []).sort((a, b) => a.rank - b.rank);
+      const hs = byP[p.id] || [];
       return '<div class="card"><h2>' + esc(p.name) + '</h2>' +
         (hs.length ? '<p>' + hs.map((h) => '<span class="' + (h.isDead ? 'dead' : '') + '">' +
           h.rank + '. ' + esc(h.golferName) + '</span>').join(' &nbsp;·&nbsp; ') + '</p>'
           : '<p class="muted">No Hearn list — they take a zero if they forget.</p>') +
-        '<textarea id="hx' + p.id + '" placeholder="One golfer per line, in preference order">' +
-        hs.map((h) => esc(h.golferName)).join('\\n') + '</textarea>' +
-        '<div class="row" style="margin-top:8px"><button class="act" data-save="' + p.id + '">Save list</button></div></div>';
+        '</div>';
     }).join('');
-  el.querySelectorAll('[data-save]').forEach((b) => {
-    b.onclick = async () => {
-      const id = b.dataset.save;
-      try {
-        await api('/api/seasons/' + SEASON.id + '/hearn/' + id, 'PUT',
-          { golferNames: $('hx' + id).value.split('\\n') });
-        toast('Hearn list saved'); render();
-      } catch (e) { toast(e.message, true); }
-    };
-  });
+
+  const refreshGolfer = () => {
+    const hs = byP[$('hnP').value] || [];
+    const rank = Number($('hnSlot').value);
+    const existing = hs.find((h) => h.rank === rank);
+    $('hnG').innerHTML = golferOptionsHtml(golferPool, existing ? [existing.golferName] : [], existing ? existing.golferName : '');
+  };
+  const refreshSlots = () => {
+    const hs = byP[$('hnP').value] || [];
+    const opts = [];
+    for (let rank = 1; rank <= hs.length + 1; rank++) {
+      const existing = hs.find((h) => h.rank === rank);
+      opts.push('<option value="' + rank + '">' + rank + (existing ? ' (' + esc(existing.golferName) + ')' : ' (new)') + '</option>');
+    }
+    $('hnSlot').innerHTML = opts.join('');
+    refreshGolfer();
+  };
+  $('hnP').onchange = refreshSlots;
+  $('hnSlot').onchange = refreshGolfer;
+  refreshSlots();
+
+  $('hnGo').onclick = async () => {
+    const pid = $('hnP').value;
+    const rank = Number($('hnSlot').value);
+    const golferName = $('hnG').value;
+    if (!golferName) return toast('Pick a golfer', true);
+    const hs = byP[pid] || [];
+    const names = [];
+    for (let i = 1; i <= Math.max(hs.length, rank); i++) {
+      names.push(i === rank ? golferName : (hs.find((h) => h.rank === i) || {}).golferName || '');
+    }
+    try {
+      await api('/api/seasons/' + SEASON.id + '/hearn/' + pid, 'PUT', { golferNames: names });
+      toast('Hearn pick saved'); render();
+    } catch (e) { toast(e.message, true); }
+  };
 }
 
 function renderSchedule(el) {
