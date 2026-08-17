@@ -26,7 +26,11 @@ export interface TOCCWeekResult {
   rankings: TOCCRankingRow[];
   /** Usually one participant; more than one only on a tie for 1st. */
   winners: string[];
-  /** Breaks even; usually one participant, more than one only on a tie for 2nd. */
+  /**
+   * Gets a break on the stake (see below); usually one participant, more
+   * than one only on a tie for 2nd. Empty whenever 1st place is itself tied
+   * (that tie already occupies place 2).
+   */
   secondPlace: string[];
   payments: TOCCPayment[];
 }
@@ -34,9 +38,18 @@ export interface TOCCWeekResult {
 /**
  * TOCC side action: ranked only among the opted-in subgroup, using each
  * participant's normal weekly pick. 1st place collects the stake from
- * everyone outside the 1st/2nd tie groups; 2nd place breaks even. The stake
- * doubles to $200/person if the winning pick's golfer actually won the real
- * tournament that week (not just best-in-subgroup).
+ * everyone outside the 1st-place tie group. The stake doubles to $200/person
+ * if the winning pick's golfer actually won the real tournament that week
+ * (not just best-in-subgroup).
+ *
+ * 2nd place isn't fully exempt — it gets a break worth the *base* stake
+ * (never the doubled one), split evenly across however many are tied for
+ * 2nd, and pays whatever's left of the (possibly doubled) stake after that.
+ * A solo 2nd place in a normal week nets to $0 (the classic break-even
+ * case); a solo 2nd place in a week where the stake doubled still owes the
+ * base stake, since only the doubled portion got offset; a 4-way tie for
+ * 2nd each get a $100/4 = $25 break, so each still owes $75 of a normal
+ * $100 stake.
  *
  * A subgroup member with no pick at all that week (no self-pick, no valid
  * Hearn fallback) is still ranked — at $0 earnings, same as anyone who
@@ -49,11 +62,11 @@ export interface TOCCWeekResult {
  * real golf leaderboard uses — a group tied on earnings occupies as many
  * consecutive places as its size (a 2-way tie for 1st occupies places 1
  * AND 2). So a tie for 1st "counts for 1st and 2nd": the tied golfers split
- * the winnings, and there is no separate 2nd-place break-even that week —
+ * the winnings, and there is no separate 2nd-place break that week —
  * whoever has the next-best earnings is really in 3rd (or later) and pays
- * like anyone else outside the tie. The 2nd-place break-even only exists
- * when place 2 isn't already claimed by the 1st-place group, i.e. exactly
- * one participant is alone in 1st.
+ * the full stake like anyone else outside the tie. The 2nd-place break only
+ * exists when place 2 isn't already claimed by the 1st-place group, i.e.
+ * exactly one participant is alone in 1st.
  */
 export function computeTOCCWeek(
   tournamentId: string,
@@ -102,13 +115,17 @@ export function computeTOCCWeek(
   );
   const stake = wonRealTournament ? stakes.stakeIfWinner : stakes.stake;
 
-  const payers = rankings
-    .map((r) => r.participantId)
-    .filter((id) => !winners.includes(id) && !secondPlace.includes(id));
+  const payers = rankings.map((r) => r.participantId).filter((id) => !winners.includes(id));
+  // The 2nd-place break is always sized off the base stake, even in a
+  // doubled week — only however much of the (possibly doubled) stake that
+  // covers gets offset, per participant tied there.
+  const secondPlaceBreak = secondPlace.length > 0 ? stakes.stake / secondPlace.length : 0;
 
   const payments: TOCCPayment[] = [];
   for (const payer of payers) {
-    const share = stake / winners.length;
+    const owed = secondPlace.includes(payer) ? stake - secondPlaceBreak : stake;
+    if (owed <= 0) continue;
+    const share = owed / winners.length;
     for (const winner of winners) {
       payments.push({ from: payer, to: winner, amount: share });
     }

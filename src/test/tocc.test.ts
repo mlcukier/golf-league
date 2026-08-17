@@ -27,7 +27,7 @@ describe("computeTOCCWeek", () => {
     ]);
   });
 
-  it("doubles the stake to $200/person when the winning pick won the tournament outright", () => {
+  it("doubles the stake to $200/person when the winning pick won the tournament outright — but 2nd place's break is only ever the base $100, so they still owe $100", () => {
     const results = [
       result("t1", "g1", 1800, 1),
       result("t1", "g2", 500, 5),
@@ -35,9 +35,37 @@ describe("computeTOCCWeek", () => {
       result("t1", "g4", 0, null),
     ];
     const week = computeTOCCWeek("t1", members, picks, results);
-    expect(week.payments).toEqual([
+    expect(week.payments.sort((a, b) => a.from.localeCompare(b.from))).toEqual([
+      { from: "p2", to: "p1", amount: 100 }, // $200 doubled stake - $100 base-stake break
       { from: "p3", to: "p1", amount: 200 },
       { from: "p4", to: "p1", amount: 200 },
+    ]);
+  });
+
+  it("a 4-way tie for 2nd splits the $100 break 4 ways — each still owes $75", () => {
+    const fiveMembers = ["p1", "p2", "p3", "p4", "p5"];
+    const fivePicks = [
+      pick("p1", "t1", "g1"),
+      pick("p2", "t1", "g2"),
+      pick("p3", "t1", "g3"),
+      pick("p4", "t1", "g4"),
+      pick("p5", "t1", "g5"),
+    ];
+    const results = [
+      result("t1", "g1", 900, 2),
+      result("t1", "g2", 500, 5),
+      result("t1", "g3", 500, 5),
+      result("t1", "g4", 500, 5),
+      result("t1", "g5", 500, 5),
+    ];
+    const week = computeTOCCWeek("t1", fiveMembers, fivePicks, results);
+    expect(week.winners).toEqual(["p1"]);
+    expect(week.secondPlace.sort()).toEqual(["p2", "p3", "p4", "p5"]);
+    expect(week.payments.sort((a, b) => a.from.localeCompare(b.from))).toEqual([
+      { from: "p2", to: "p1", amount: 75 },
+      { from: "p3", to: "p1", amount: 75 },
+      { from: "p4", to: "p1", amount: 75 },
+      { from: "p5", to: "p1", amount: 75 },
     ]);
   });
 
