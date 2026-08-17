@@ -578,9 +578,10 @@ function renderRoster(el) {
       '<button class="act" id="npGo">Add</button></div></div>' +
     '<div class="card"><h2>Season roster</h2><p class="muted">Nickname is what other participants see instead of Name.</p><table>' +
       '<tr><th>Name</th><th>Nickname</th><th>Email</th><th>In season</th><th>TOCC</th></tr>' +
-      STATE.participants.map((p) => '<tr><td>' + esc(p.name) + '</td><td><input data-nick="' + p.id +
-        '" value="' + esc(p.nickname || '') + '" style="width:120px"></td><td class="muted">' + esc(p.email) +
-        '</td><td><input type="checkbox" data-in="' + p.id + '"' + (inSeason.has(p.id) ? ' checked' : '') +
+      STATE.participants.map((p) => '<tr><td><input data-name="' + p.id + '" value="' + esc(p.name) +
+        '" style="width:120px"></td><td><input data-nick="' + p.id +
+        '" value="' + esc(p.nickname || '') + '" style="width:120px"></td><td><input data-email="' + p.id +
+        '" value="' + esc(p.email) + '" style="width:180px"></td><td><input type="checkbox" data-in="' + p.id + '"' + (inSeason.has(p.id) ? ' checked' : '') +
         '></td><td><input type="checkbox" data-tocc="' + p.id + '"' + (tocc.has(p.id) ? ' checked' : '') +
         (inSeason.has(p.id) ? '' : ' disabled') + '></td></tr>').join('') + '</table></div>';
 
@@ -606,6 +607,22 @@ function renderRoster(el) {
         await api('/api/participants/' + inp.dataset.nick + '/nickname', 'PUT', { nickname: inp.value });
         toast('Nickname saved'); STATE = await api('/api/state');
       } catch (e) { toast(e.message, true); }
+    };
+  });
+  el.querySelectorAll('[data-name]').forEach((inp) => {
+    inp.onchange = async () => {
+      try {
+        await api('/api/participants/' + inp.dataset.name, 'PUT', { name: inp.value });
+        toast('Name saved'); STATE = await api('/api/state');
+      } catch (e) { toast(e.message, true); inp.value = STATE.participants.find((p) => p.id === inp.dataset.name).name; }
+    };
+  });
+  el.querySelectorAll('[data-email]').forEach((inp) => {
+    inp.onchange = async () => {
+      try {
+        await api('/api/participants/' + inp.dataset.email, 'PUT', { email: inp.value });
+        toast('Email saved'); STATE = await api('/api/state');
+      } catch (e) { toast(e.message, true); inp.value = STATE.participants.find((p) => p.id === inp.dataset.email).email; }
     };
   });
   el.querySelectorAll('[data-tocc]').forEach((c) => {

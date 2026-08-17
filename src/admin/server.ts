@@ -460,17 +460,31 @@ const routes: Route[] = [
     },
   },
   {
+    /**
+     * Lists every pick for a season. Golfer identity is withheld (name and
+     * id both) for any tournament that hasn't started yet — the admin here
+     * is also a participant, so this is the one place that would otherwise
+     * let them see the field before making (or being locked into) their own
+     * pick. "Selected" just confirms a pick exists; who it's for stays
+     * hidden until the same deadline everyone else is bound by has passed.
+     */
     method: "GET",
     pattern: /^\/api\/seasons\/([^/]+)\/picks$/,
     auth: "admin",
     handler: async ({ params, store }) => {
       const data = await store.read();
       const picks = seasonPicks(data, params[0]!);
-      return picks.map((p) => ({
-        ...p,
-        golferName: data.golfers.find((g) => g.id === p.golferId)?.name ?? p.golferId,
-        participantName: data.participants.find((x) => x.id === p.participantId)?.name,
-      }));
+      const now = Date.now();
+      return picks.map((p) => {
+        const tournament = data.tournaments.find((t) => t.id === p.tournamentId);
+        const locked = !tournament || new Date(tournament.startTime).getTime() > now;
+        return {
+          ...p,
+          golferId: locked ? null : p.golferId,
+          golferName: locked ? "Selected" : (data.golfers.find((g) => g.id === p.golferId)?.name ?? p.golferId),
+          participantName: data.participants.find((x) => x.id === p.participantId)?.name,
+        };
+      });
     },
   },
 
@@ -613,6 +627,29 @@ const routes: Route[] = [
         participant.nickname = nickname.length > 0 ? nickname : null;
       });
       return { ok: true, nickname: nickname.length > 0 ? nickname : null };
+    },
+  },
+  {
+    /** Admin edit of a participant's name/email. Doesn't touch their password. */
+    method: "PUT",
+    pattern: /^\/api\/participants\/([^/]+)$/,
+    auth: "admin",
+    handler: async ({ params, body, store }) => {
+      const name = body.name !== undefined ? String(body.name).trim() : undefined;
+      const email = body.email !== undefined ? String(body.email).trim().toLowerCase() : undefined;
+      if (name !== undefined && name.length === 0) throw new HttpError(400, "Name can't be empty");
+      if (email !== undefined && email.length === 0) throw new HttpError(400, "Email can't be empty");
+
+      await store.update((d) => {
+        const participant = d.participants.find((p) => p.id === params[0]!);
+        if (!participant) throw new HttpError(404, `No participant ${params[0]}`);
+        if (email !== undefined && d.participants.some((p) => p.id !== participant.id && p.email === email)) {
+          throw new HttpError(409, `${email} is already a participant`);
+        }
+        if (name !== undefined) participant.name = name;
+        if (email !== undefined) participant.email = email;
+      });
+      return { ok: true };
     },
   },
   {
