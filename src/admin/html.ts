@@ -43,6 +43,15 @@ export const ADMIN_HTML = /* html */ `<!doctype html>
   .muted { color:var(--muted); }
   #toast { position:fixed; right:16px; bottom:16px; background:var(--panel); border:1px solid var(--line); padding:10px 14px; border-radius:8px; display:none; max-width:60ch; z-index:10; }
   .stat { font-size:24px; font-weight:650; }
+  .gbox { background:var(--panel); border:1px solid var(--line); border-radius:10px; margin-bottom:8px; overflow:hidden; }
+  .gbox.current { border-color:var(--accent); }
+  .gbox-head { padding:10px 14px; cursor:pointer; display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .gbox-head:hover { background:#101713; }
+  .gbox-name { font-weight:600; }
+  .gbox-body { display:none; padding:0 14px 14px; border-top:1px solid var(--line); }
+  .gbox.open .gbox-body { display:block; }
+  .gbox h4 { font-size:12px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); margin:14px 0 6px; font-weight:600; }
+  .gbox-avail { font-size:13px; margin:3px 0; }
   .authWrap { max-width:360px; margin:60px auto; padding:0 16px; }
   .authWrap input { width:100%; }
 </style>
@@ -85,6 +94,7 @@ export const ADMIN_HTML = /* html */ `<!doctype html>
   </span>
   <nav>
     <button data-tab="mypicks" class="on">My Picks</button>
+    <button data-tab="standings">Standings</button>
     <button data-tab="myhearn">Hearn Picks</button>
     <button data-tab="dash" data-admin>Dashboard</button>
     <button data-tab="picks" data-admin>Picks</button>
@@ -98,6 +108,7 @@ export const ADMIN_HTML = /* html */ `<!doctype html>
 </header>
 <main>
   <section id="mypicks" class="on"></section>
+  <section id="standings"></section>
   <section id="myhearn"></section>
   <section id="dash"></section>
   <section id="picks"></section>
@@ -279,6 +290,7 @@ function render() {
   const tab = document.querySelector('nav button.on').dataset.tab;
   const el = $(tab);
   if (tab === 'mypicks') return renderMyPicksTab(el);
+  if (tab === 'standings') return renderStandingsTab(el);
   if (tab === 'myhearn') return renderMyHearnTab(el);
   if (!REPORT && tab !== 'seasons') {
     el.innerHTML = '<div class="card"><p class="muted">No season selected. Create one in the Seasons tab.</p></div>';
@@ -337,28 +349,13 @@ function potsCardsHtml(report, season, tournaments) {
   );
 }
 
-// ---- My Picks (every logged-in participant) --------------------------------
+// ---- Standings (every logged-in participant) --------------------------------
 
-function renderMyPicksTab(el) {
+function renderStandingsTab(el) {
   if (!MY.season) {
     el.innerHTML = '<div class="card"><p class="muted">' + esc(MY.failureMessage || 'No active season.') + '</p></div>';
     return;
   }
-
-  const pt = MY.pickTarget;
-  const existingName = MY.existingPick ? MY.existingPick.golferName : null;
-  const usedNames = new Set(
-    MY.myPicks.filter((p) => !pt || p.tournamentId !== pt.id).map((p) => p.golferName)
-  );
-  const pickCard = pt
-    ? '<div class="card"><h2>' + esc(pt.name) + '</h2>' +
-        '<p class="muted">Deadline: ' + new Date(pt.startTime).toLocaleString() +
-        (existingName ? ' · Current pick: <strong>' + esc(existingName) + '</strong>' : '') + '</p>' +
-        '<div class="row">' +
-          '<select id="myPickG" style="min-width:240px">' + golferOptionsHtml(pt.field, [existingName], existingName, usedNames) + '</select>' +
-          '<button class="act" id="myPickGo">' + (existingName ? 'Update pick' : 'Submit pick') + '</button>' +
-        '</div></div>'
-    : '<div class="card"><p class="muted">No upcoming tournament open for picks right now.</p></div>';
 
   const picksTable = MY.myPicks.length
     ? '<table><tr><th>Week</th><th>Golfer</th><th>Source</th></tr>' +
@@ -370,7 +367,6 @@ function renderMyPicksTab(el) {
   const q = MY.report.quarterStandings || {};
   const pot = MY.report.payouts || { totalPot: 0, overall: [], quarters: {} };
   el.innerHTML =
-    pickCard +
     '<div class="card"><h2>Season Standings</h2>' +
       (pot.totalPot ? '<p class="muted">Total pot: ' + money(pot.totalPot) + '</p>' : '') +
       standingsTable(MY.report.seasonStandings, MY.report, pot.overall) + '</div>' +
@@ -378,18 +374,82 @@ function renderMyPicksTab(el) {
       '<div class="card"><h2>Quarter ' + n + '</h2>' + standingsTable(q[n], MY.report, pot.quarters[n]) + '</div>').join('') + '</div>' +
     '<div class="grid2">' + potsCardsHtml(MY.report, MY.season, MY.tournaments) + '</div>' +
     '<div class="card"><h2>Your picks this season</h2>' + picksTable + '</div>';
+}
 
-  if (pt) {
-    $('myPickGo').onclick = async () => {
-      const golferName = $('myPickG').value;
-      if (!golferName) return toast('Choose a golfer first', true);
+// ---- My Picks (every logged-in participant) — pure picking UI --------------
+
+function finishLabel(fp) {
+  return fp === null ? 'MC' : '#' + fp;
+}
+
+function golferHistoryRows(starts) {
+  if (!starts || !starts.length) return '<p class="muted">None found.</p>';
+  return '<table><tr><th>Date</th><th>Tournament</th><th>Place</th></tr>' +
+    starts.map((s) => '<tr><td>' + new Date(s.date).toLocaleDateString() + '</td><td>' + esc(s.eventName) +
+      '</td><td>' + finishLabel(s.finishPosition) + '</td></tr>').join('') + '</table>';
+}
+
+function availabilityLineHtml(label, a) {
+  if (!a) return '<p class="gbox-avail muted">' + esc(label) + ': not applicable yet (season needs 4+ weeks for quarters)</p>';
+  if (a.total === 0) return '<p class="gbox-avail muted">' + esc(label) + ': nobody there yet</p>';
+  return '<p class="gbox-avail">' + esc(label) + ': available in <strong>' + a.available + ' of ' + a.total + '</strong> entries</p>';
+}
+
+function golferBoxHtml(g, isCurrent, currentQuarter) {
+  return '<div class="gbox' + (isCurrent ? ' current' : '') + '" data-gname="' + esc(g.name) + '">' +
+    '<div class="gbox-head" data-toggle="' + esc(g.name) + '">' +
+      '<span class="gbox-name">' + esc(g.name) + '</span>' +
+      '<span class="muted">' + esc(oddsLabel(g.odds)) + '</span>' +
+      (isCurrent ? '<span class="pill" style="color:var(--accent);border-color:var(--accent)">current pick</span>' : '') +
+      (g.usedByMe ? '<span class="pill" style="color:var(--bad);border-color:var(--bad)">used</span>' : '') +
+      '<span class="muted" style="margin-left:auto">' + g.availability.available + '/' + g.availability.total + ' avail</span>' +
+    '</div>' +
+    '<div class="gbox-body">' +
+      (g.usedByMe
+        ? '<p class="muted">You already used this golfer earlier this season — one-and-done.</p>'
+        : '<button class="act" data-choose="' + esc(g.name) + '">' + (isCurrent ? 'Keep this pick' : 'Choose this player') + '</button>') +
+      '<h4>Recent Results (last 5 starts)</h4>' + golferHistoryRows(g.recentStarts) +
+      '<h4>Course History</h4>' + golferHistoryRows(g.courseHistory) +
+      '<h4>Opponent Availability</h4>' +
+      availabilityLineHtml('League-wide', g.availability) +
+      availabilityLineHtml('Ahead of you overall', g.aheadOverallAvailability) +
+      availabilityLineHtml('Ahead of you in Quarter ' + (currentQuarter || '?'), g.aheadQuarterAvailability) +
+    '</div>' +
+  '</div>';
+}
+
+function renderMyPicksTab(el) {
+  if (!MY.season) {
+    el.innerHTML = '<div class="card"><p class="muted">' + esc(MY.failureMessage || 'No active season.') + '</p></div>';
+    return;
+  }
+
+  const pt = MY.pickTarget;
+  if (!pt) {
+    el.innerHTML = '<div class="card"><p class="muted">No upcoming tournament open for picks right now.</p></div>';
+    return;
+  }
+
+  const existingName = MY.existingPick ? MY.existingPick.golferName : null;
+  el.innerHTML =
+    '<div class="card"><h2>' + esc(pt.name) + '</h2>' +
+      '<p class="muted">Deadline: ' + new Date(pt.startTime).toLocaleString() +
+      (existingName ? ' · Current pick: <strong>' + esc(existingName) + '</strong>' : '') + '</p>' +
+    '</div>' +
+    pt.field.map((g) => golferBoxHtml(g, g.name === existingName, pt.currentQuarter)).join('');
+
+  el.querySelectorAll('[data-toggle]').forEach((head) => {
+    head.onclick = () => head.closest('.gbox').classList.toggle('open');
+  });
+  el.querySelectorAll('[data-choose]').forEach((btn) => {
+    btn.onclick = async () => {
       try {
-        const r = await api('/api/my/pick', 'POST', { tournamentId: pt.id, golferName });
+        const r = await api('/api/my/pick', 'POST', { tournamentId: pt.id, golferName: btn.dataset.choose });
         toast(r.message, !r.ok);
         if (r.ok) { await loadMyState(); render(); }
       } catch (e) { toast(e.message, true); }
     };
-  }
+  });
 }
 
 function renderMyHearnTab(el) {

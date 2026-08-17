@@ -13,8 +13,8 @@ import {
   type LeagueData,
 } from "../store/store.js";
 import { buildSeasonReport } from "../core/report.js";
-import { computeGolferAvailability } from "../core/availability.js";
-import { blockingReasons, validatePick } from "../core/oneAndDone.js";
+import { computeGolferAvailability, getAvailability } from "../core/availability.js";
+import { blockingReasons, usedGolferIds, validatePick } from "../core/oneAndDone.js";
 import { applyHearnFallbacks, findDeadHearnEntries } from "../core/hearn.js";
 import { createSeason, createTestLeague, startNewSeason } from "../core/season.js";
 import { openTournament, resolveActiveSeasonForParticipant } from "../core/emailRouting.js";
@@ -33,6 +33,7 @@ import { renderResultsDigestEmail, renderSetPasswordEmail } from "../email/templ
 import { getAuthedClient, sendEmail, type OAuth2Client } from "../email/gmailClient.js";
 import { createOddsCache, oddsForTournament, type OddsCache } from "../providers/dataGolfOdds.js";
 import { createPlayerListCache, type PlayerListCache } from "../providers/dataGolfPlayers.js";
+import { createGolferFormCache, type GolferFormCache } from "../providers/dataGolfForm.js";
 import type { Participant, Season } from "../types.js";
 import { ADMIN_HTML } from "./html.js";
 
@@ -62,6 +63,8 @@ interface RouteContext {
   oddsCache: OddsCache | null;
   /** null when DATAGOLF_API_KEY isn't configured — the Hearn picker then falls back to just the open tournament's field. */
   playerListCache: PlayerListCache | null;
+  /** null when DATAGOLF_API_KEY isn't configured — recent-form/course-history sections are then omitted from the pick page. */
+  golferFormCache: GolferFormCache | null;
 }
 
 class HttpError extends Error {
@@ -284,7 +287,7 @@ const routes: Route[] = [
     method: "GET",
     pattern: /^\/api\/my\/state$/,
     auth: "auth",
-    handler: async ({ me, store, oddsCache, playerListCache }) => {
+    handler: async ({ me, store, oddsCache, playerListCache, golferFormCache }) => {
       const data = await store.read();
       const lookup = resolveActiveSeasonForParticipant(data, me!.email);
       if (!lookup.ok || !lookup.season) {
@@ -294,20 +297,44 @@ const routes: Route[] = [
       const report = buildSeasonReport(data, season);
       const pickTarget = openTournament(data, season.id);
       const golferName = (id: string) => data.golfers.find((g) => g.id === id)?.name ?? id;
+      const seasonPicksList = seasonPicks(data, season.id);
       const existingPick = pickTarget
-        ? seasonPicks(data, season.id).find(
-            (p) => p.participantId === me!.id && p.tournamentId === pickTarget.id
-          )
+        ? seasonPicksList.find((p) => p.participantId === me!.id && p.tournamentId === pickTarget.id)
         : undefined;
 
       const odds = pickTarget && oddsCache ? oddsForTournament(await oddsCache.get(), pickTarget.name) : null;
-      const availability = pickTarget
-        ? computeGolferAvailability(
-            seasonPicks(data, season.id),
-            seasonRoster(data, season.id).map((p) => p.id),
-            pickTarget.id
-          )
-        : new Map<string, number>();
+
+      // Three cohorts for "opponent availability": the whole roster, whoever
+      // currently has more season earnings than me, and whoever currently
+      // has more THIS QUARTER's earnings than me. computeSeasonStandings
+      // only lists participants with at least one pick, so a participant
+      // (including me) with none yet is implicitly at $0 for comparison.
+      const rosterIds = seasonRoster(data, season.id).map((p) => p.id);
+      const myOverallEarnings = report.seasonStandings.find((r) => r.participantId === me!.id)?.totalEarnings ?? 0;
+      const aheadOverallIds = report.seasonStandings
+        .filter((r) => r.totalEarnings > myOverallEarnings)
+        .map((r) => r.participantId);
+      const currentQuarter = pickTarget
+        ? report.quarterBoundaries.find((b) => pickTarget.sequence >= b.firstSequence && pickTarget.sequence <= b.lastSequence)
+        : undefined;
+      const quarterStandings = currentQuarter ? report.quarterStandings[currentQuarter.quarter] ?? [] : [];
+      const myQuarterEarnings = quarterStandings.find((r) => r.participantId === me!.id)?.totalEarnings ?? 0;
+      const aheadQuarterIds = quarterStandings.filter((r) => r.totalEarnings > myQuarterEarnings).map((r) => r.participantId);
+
+      const rosterAvailability = pickTarget ? computeGolferAvailability(seasonPicksList, rosterIds, pickTarget.id) : new Map();
+      const aheadOverallAvailability = pickTarget
+        ? computeGolferAvailability(seasonPicksList, aheadOverallIds, pickTarget.id)
+        : new Map();
+      const aheadQuarterAvailability =
+        pickTarget && currentQuarter ? computeGolferAvailability(seasonPicksList, aheadQuarterIds, pickTarget.id) : new Map();
+
+      // Already used this season (excluding this week's own pick, which is
+      // the current selection, not a blocked one).
+      const myUsedGolferIds = usedGolferIds(me!.id, season.id, data.picks);
+      if (existingPick) myUsedGolferIds.delete(existingPick.golferId);
+
+      const form =
+        pickTarget?.externalEventId && golferFormCache ? await golferFormCache.get(Number(pickTarget.externalEventId)) : null;
 
       // The Hearn list is a season-long fallback, not scoped to one week —
       // its picker draws from the whole PGA Tour roster, not just whoever's
@@ -329,10 +356,22 @@ const routes: Route[] = [
         pickTarget: pickTarget
           ? {
               ...pickTarget,
+              currentQuarter: currentQuarter?.quarter ?? null,
               field: [...tournamentField(data, pickTarget.id)]
                 .map((id) => {
                   const name = golferName(id);
-                  return { name, odds: odds?.get(name) ?? null, availabilityPct: availability.get(id) ?? 100 };
+                  return {
+                    name,
+                    odds: odds?.get(name) ?? null,
+                    usedByMe: myUsedGolferIds.has(id),
+                    availability: getAvailability(rosterAvailability, id, rosterIds.length),
+                    aheadOverallAvailability: getAvailability(aheadOverallAvailability, id, aheadOverallIds.length),
+                    aheadQuarterAvailability: currentQuarter
+                      ? getAvailability(aheadQuarterAvailability, id, aheadQuarterIds.length)
+                      : null,
+                    recentStarts: form?.recentStarts.get(name) ?? [],
+                    courseHistory: form?.courseHistory.get(name) ?? [],
+                  };
                 })
                 .sort((a, b) => a.name.localeCompare(b.name)),
             }
@@ -1042,6 +1081,7 @@ export function createAdminServer(options: AdminServerOptions) {
   const secureCookies = process.env.NODE_ENV === "production";
   const oddsCache = options.dataGolfApiKey ? createOddsCache(options.dataGolfApiKey) : null;
   const playerListCache = options.dataGolfApiKey ? createPlayerListCache(options.dataGolfApiKey) : null;
+  const golferFormCache = options.dataGolfApiKey ? createGolferFormCache(options.dataGolfApiKey) : null;
   const sendMail = createSendMail(gmailStateDir);
 
   return createServer((req: IncomingMessage, res: ServerResponse) => {
@@ -1094,6 +1134,7 @@ export function createAdminServer(options: AdminServerOptions) {
           sendMail,
           oddsCache,
           playerListCache,
+          golferFormCache,
         });
         return send(200, result);
       } catch (error) {
