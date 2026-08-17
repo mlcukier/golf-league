@@ -96,7 +96,6 @@ export const ADMIN_HTML = /* html */ `<!doctype html>
     <button data-tab="mypicks" class="on">My Picks</button>
     <button data-tab="standings">Standings</button>
     <button data-tab="myhearn">Hearn Picks</button>
-    <button data-tab="dash" data-admin>Dashboard</button>
     <button data-tab="picks" data-admin>Picks</button>
     <button data-tab="hearn" data-admin>Hearn Lists</button>
     <button data-tab="schedule" data-admin>Schedule</button>
@@ -110,7 +109,6 @@ export const ADMIN_HTML = /* html */ `<!doctype html>
   <section id="mypicks" class="on"></section>
   <section id="standings"></section>
   <section id="myhearn"></section>
-  <section id="dash"></section>
   <section id="picks"></section>
   <section id="hearn"></section>
   <section id="schedule"></section>
@@ -296,7 +294,7 @@ function render() {
     el.innerHTML = '<div class="card"><p class="muted">No season selected. Create one in the Seasons tab.</p></div>';
     return;
   }
-  ({ dash: renderDash, picks: renderPicks, hearn: renderHearn, schedule: renderSchedule,
+  ({ picks: renderPicks, hearn: renderHearn, schedule: renderSchedule,
      results: renderResults, roster: renderRoster, seasons: renderSeasons })[tab](el);
 }
 
@@ -490,18 +488,6 @@ function renderMyHearnTab(el) {
 }
 
 // ---- admin tabs -------------------------------------------------------------
-
-function renderDash(el) {
-  const q = REPORT.quarterStandings || {};
-  const pot = REPORT.payouts || { totalPot: 0, overall: [], quarters: {} };
-  el.innerHTML =
-    '<div class="card"><h2>Season Standings</h2>' +
-      (pot.totalPot ? '<p class="muted">Total pot: ' + money(pot.totalPot) + '</p>' : '') +
-      standingsTable(REPORT.seasonStandings, REPORT, pot.overall) + '</div>' +
-    '<div class="grid2">' + [1,2,3,4].map((n) =>
-      '<div class="card"><h2>Quarter ' + n + '</h2>' + standingsTable(q[n], REPORT, pot.quarters[n]) + '</div>').join('') + '</div>' +
-    '<div class="grid2">' + potsCardsHtml(REPORT, SEASON, REPORT.tournaments) + '</div>';
-}
 
 async function renderPicks(el) {
   const picks = await api('/api/seasons/' + SEASON.id + '/picks');
