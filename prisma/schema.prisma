@@ -1,0 +1,204 @@
+// Optional Postgres model for the golf league app.
+//
+// The app ships on a JSON-file store (src/store/jsonStore.ts), which is
+// right-sized for a league of this scale and needs no database on the box.
+// This schema mirrors src/types.ts exactly and exists as the documented
+// upgrade path if the league ever outgrows a single JSON file.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// Long-lived container spanning years. A test league is an ordinary league
+/// flagged so its money never mixes with the real one.
+model League {
+  id        String   @id @default(cuid())
+  name      String
+  isTest    Boolean  @default(false)
+  createdAt DateTime @default(now())
+  seasons   Season[]
+}
+
+enum SeasonStatus {
+  DRAFT
+  ACTIVE
+  COMPLETE
+}
+
+/// One year of a league. Everything that resets annually — picks, the
+/// one-and-done pool, standings, pot balances — hangs off a season.
+model Season {
+  id       String       @id @default(cuid())
+  league   League       @relation(fields: [leagueId], references: [id])
+  leagueId String
+  year     Int
+  status   SeasonStatus @default(DRAFT)
+
+  /// League opens Jan 1; the first tournament after this date is event 1.
+  startDate DateTime
+  /// Set when the finale (2nd FedEx Cup playoff event) is known.
+  endDate   DateTime?
+
+  // Per-season money rules, so a test league can run for $0.
+  grellerWeeklyContribution Int @default(10)
+  missedCutFine             Int @default(50)
+  toccStake                 Int @default(100)
+  toccStakeIfWinner         Int @default(200)
+
+  entries     SeasonEntry[]
+  tournaments Tournament[]
+  picks       Pick[]
+  hearnPicks  HearnPick[]
+
+  @@unique([leagueId, year])
+}
+
+model Participant {
+  id      String @id @default(cuid())
+  name    String
+  email   String @unique
+
+  entries    SeasonEntry[]
+  picks      Pick[]
+  hearnPicks HearnPick[]
+  ledger     PotLedgerEntry[]
+}
+
+/// Per-season membership. Rosters and TOCC participation change year to year.
+model SeasonEntry {
+  season        Season      @relation(fields: [seasonId], references: [id])
+  seasonId      String
+  participant   Participant @relation(fields: [participantId], references: [id])
+  participantId String
+  isTOCCMember  Boolean     @default(false)
+
+  @@id([seasonId, participantId])
+}
+
+model Tournament {
+  id       String @id @default(cuid())
+  season   Season @relation(fields: [seasonId], references: [id])
+  seasonId String
+  name     String
+  sequence Int
+
+  /// Round 1 tee-off. Doubles as the pick deadline: a pick must be RECEIVED
+  /// strictly before this instant.
+  startTime      DateTime
+  isSeasonFinale Boolean  @default(false)
+  /// DataGolf event id.
+  externalEventId String?
+
+  field   TournamentField[]
+  picks   Pick[]
+  results GolferResult[]
+
+  @@unique([seasonId, sequence])
+}
+
+model Golfer {
+  id   String @id @default(cuid())
+  name String
+  /// DataGolf player id (dg_id).
+  externalId String? @unique
+
+  fieldEntries TournamentField[]
+  picks        Pick[]
+  hearnPicks   HearnPick[]
+  results      GolferResult[]
+}
+
+model TournamentField {
+  tournament   Tournament @relation(fields: [tournamentId], references: [id])
+  tournamentId String
+  golfer       Golfer     @relation(fields: [golferId], references: [id])
+  golferId     String
+
+  @@id([tournamentId, golferId])
+}
+
+enum PickSource {
+  email
+  admin
+  hearn
+}
+
+model Pick {
+  id            String      @id @default(cuid())
+  participant   Participant @relation(fields: [participantId], references: [id])
+  participantId String
+  season        Season      @relation(fields: [seasonId], references: [id])
+  seasonId      String
+  tournament    Tournament  @relation(fields: [tournamentId], references: [id])
+  tournamentId  String
+  golfer        Golfer      @relation(fields: [golferId], references: [id])
+  golferId      String
+  submittedAt   DateTime    @default(now())
+  source        PickSource  @default(email)
+
+  /// One-and-done, enforced at the database level: a participant may use each
+  /// golfer at most once PER SEASON. Scoping the constraint to seasonId is
+  /// what lets the pool reset each year.
+  @@unique([participantId, seasonId, golferId])
+  /// Exactly one pick per participant per week.
+  @@unique([participantId, tournamentId])
+}
+
+/// A participant's static, ordered fallback list for a season. Used in rank
+/// order when they forget to pick; entries already burned this season are
+/// skipped rather than assigned.
+model HearnPick {
+  season        Season      @relation(fields: [seasonId], references: [id])
+  seasonId      String
+  participant   Participant @relation(fields: [participantId], references: [id])
+  participantId String
+  golfer        Golfer      @relation(fields: [golferId], references: [id])
+  golferId      String
+  /// 1-based preference order; lower is tried first.
+  rank          Int
+
+  @@id([seasonId, participantId, golferId])
+  @@unique([seasonId, participantId, rank])
+}
+
+model GolferResult {
+  tournament     Tournament @relation(fields: [tournamentId], references: [id])
+  tournamentId   String
+  golfer         Golfer     @relation(fields: [golferId], references: [id])
+  golferId       String
+  earnings       Int        @default(0)
+  /// Null for CUT / WD / MDF / DQ — treated as a missed cut.
+  finishPosition Int?
+  madeCut        Boolean
+  isWin          Boolean    @default(false)
+  isTop5         Boolean    @default(false)
+  isTop10        Boolean    @default(false)
+
+  @@id([tournamentId, golferId])
+}
+
+enum PotType {
+  SIDE_POT_1
+  GRELLER
+  TOCC
+}
+
+/// Ledger for all three side pots. A pot's balance is the sum of its entries.
+model PotLedgerEntry {
+  id            String      @id @default(cuid())
+  potType       PotType
+  participant   Participant @relation(fields: [participantId], references: [id])
+  participantId String
+  seasonId      String
+  /// Null for season-end payouts (e.g. the Side Pot 1 payout).
+  tournamentId  String?
+  /// Positive = credit to participant, negative = charge.
+  amount        Int
+  reason        String
+  createdAt     DateTime    @default(now())
+}

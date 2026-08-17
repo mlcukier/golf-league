@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.env
+
+# Live league database (participant names/emails, picks, results) and the
+# temp file the atomic writer renames from. LEAGUE_DB defaults to ./data/.
+data/
+*.json.tmp

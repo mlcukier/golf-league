@@ -1,0 +1,109 @@
+import {
+  buildEqualQuarterBoundaries,
+  computeQuarterlyStandings,
+  computeSeasonStandings,
+  type StandingRow,
+} from "./scoring.js";
+import { computeGrellerHistory, type GrellerWeekResult } from "./greller.js";
+import {
+  computeSidePot1Balance,
+  computeSidePot1Tallies,
+  determineSidePot1Winners,
+  type SidePot1Tally,
+} from "./sidePot1.js";
+import { computeTOCCWeek, type TOCCWeekResult } from "./tocc.js";
+import {
+  seasonPicks,
+  seasonResults,
+  seasonRoster,
+  seasonTournaments,
+  toccMemberIds,
+  type LeagueData,
+} from "../store/store.js";
+import type { Season } from "../types.js";
+
+export interface SeasonReport {
+  season: Season;
+  seasonStandings: StandingRow[];
+  quarterStandings: Record<number, StandingRow[]>;
+  sidePot1: {
+    balance: number;
+    tallies: SidePot1Tally[];
+    leaders: SidePot1Tally[];
+  };
+  greller: {
+    history: GrellerWeekResult[];
+    currentBalance: number;
+  };
+  tocc: {
+    weeks: TOCCWeekResult[];
+    /** Net dollars won (positive) or owed (negative) per TOCC participant. */
+    netByParticipant: Record<string, number>;
+  };
+  nameByParticipantId: Map<string, string>;
+}
+
+/**
+ * Computes every standing and pot balance for a season in one pass. This is
+ * the single source of truth behind the admin dashboard, the STANDINGS/POTS
+ * email replies, and the weekly digest, so all three can never disagree.
+ */
+export function buildSeasonReport(data: LeagueData, season: Season): SeasonReport {
+  const tournaments = seasonTournaments(data, season.id);
+  const picks = seasonPicks(data, season.id);
+  const results = seasonResults(data, season.id);
+  const roster = seasonRoster(data, season.id);
+  const toccIds = toccMemberIds(data, season.id);
+
+  const boundaries =
+    tournaments.length >= 4 ? buildEqualQuarterBoundaries(tournaments) : [];
+
+  const tallies = computeSidePot1Tallies(picks, results);
+
+  const grellerHistory = computeGrellerHistory(
+    // Only weeks that have actually been played contribute to the pot.
+    tournaments.filter((t) => results.some((r) => r.tournamentId === t.id)),
+    picks,
+    results,
+    roster.length,
+    season.grellerWeeklyContribution
+  );
+
+  const toccWeeks = tournaments
+    .filter((t) => results.some((r) => r.tournamentId === t.id))
+    .map((t) =>
+      computeTOCCWeek(
+        t.id,
+        toccIds,
+        picks.filter((p) => p.tournamentId === t.id),
+        results.filter((r) => r.tournamentId === t.id),
+        { stake: season.toccStake, stakeIfWinner: season.toccStakeIfWinner }
+      )
+    );
+
+  const netByParticipant: Record<string, number> = {};
+  for (const id of toccIds) netByParticipant[id] = 0;
+  for (const week of toccWeeks) {
+    for (const payment of week.payments) {
+      netByParticipant[payment.from] = (netByParticipant[payment.from] ?? 0) - payment.amount;
+      netByParticipant[payment.to] = (netByParticipant[payment.to] ?? 0) + payment.amount;
+    }
+  }
+
+  return {
+    season,
+    seasonStandings: computeSeasonStandings(picks, results),
+    quarterStandings: computeQuarterlyStandings(picks, results, tournaments, boundaries),
+    sidePot1: {
+      balance: computeSidePot1Balance(picks, results, season.missedCutFine),
+      tallies,
+      leaders: determineSidePot1Winners(tallies),
+    },
+    greller: {
+      history: grellerHistory,
+      currentBalance: grellerHistory.at(-1)?.potBalanceAfter ?? 0,
+    },
+    tocc: { weeks: toccWeeks, netByParticipant },
+    nameByParticipantId: new Map(data.participants.map((p) => [p.id, p.name])),
+  };
+}
