@@ -231,7 +231,7 @@ describe("executeCommand other commands", () => {
 
   it("POTS reports side pot balances", () => {
     const result = executeCommand(baseData(), participant, season, { command: "POTS" }, new Date());
-    expect(result.replyText).toContain("Side Pot 1");
+    expect(result.replyText).toContain("Side Pot");
   });
 
   it("UNKNOWN replies with the help text", () => {

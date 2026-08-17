@@ -13,6 +13,10 @@ export interface GolfDataProvider {
   /** Confirmed field (golfers entered) for a tournament, used to validate picks. */
   getTournamentField(tournamentId: string): Promise<Golfer[]>;
 
-  /** Posted results for a tournament. Returns [] while the tournament is still in progress. */
-  getTournamentResults(tournamentId: string): Promise<GolferResult[]>;
+  /**
+   * Posted results for a tournament. Returns [] while the tournament is
+   * still in progress. `year` is required because DataGolf's historical
+   * results endpoint is keyed by tour/event_id/year, not by event_id alone.
+   */
+  getTournamentResults(tournamentId: string, year: number): Promise<GolferResult[]>;
 }

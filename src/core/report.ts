@@ -104,6 +104,6 @@ export function buildSeasonReport(data: LeagueData, season: Season): SeasonRepor
       currentBalance: grellerHistory.at(-1)?.potBalanceAfter ?? 0,
     },
     tocc: { weeks: toccWeeks, netByParticipant },
-    nameByParticipantId: new Map(data.participants.map((p) => [p.id, p.name])),
+    nameByParticipantId: new Map(data.participants.map((p) => [p.id, p.nickname || p.name])),
   };
 }

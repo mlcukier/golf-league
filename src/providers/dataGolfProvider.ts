@@ -7,19 +7,19 @@ const BASE_URL = "https://feeds.datagolf.com";
  * DataGolf implementation of the league's data provider.
  *
  * Endpoints used:
- *   - GET /get-schedule                          season schedule
- *   - GET /field-updates                          this week's confirmed field
- *   - GET /historical-event-data/event-list       event ids for a tour/year
- *   - GET /historical-raw-data/rounds             per-round scoring + finish
+ *   - GET /get-schedule                     season schedule
+ *   - GET /field-updates                    this week's confirmed field
+ *   - GET /historical-event-data/events     per-event results: earnings, fin_text, FedExCup points
  *
  * Confirmed against a live key: `historical-event-data/event-stats` (the
  * endpoint originally assumed here from docs alone) doesn't exist — it 404s.
- * `historical-raw-data/rounds` is the real per-event results endpoint, and it
- * carries detailed strokes-gained/round stats and `fin_text`, but **no
- * earnings/prize-money field of any kind** on this plan. `pickNumber` below
- * stays tolerant of alternate money key names in case that ever changes (or
- * a higher tier adds one), but as of this check, DataGolf cannot supply
- * money — the admin Results tab's manual paste is the real path.
+ * `historical-raw-data/rounds`, tried next, has real per-round scoring but no
+ * earnings field. `historical-event-data/events` (tour/event_id/year) is the
+ * one that actually carries per-player `earnings`, `fin_text`, and
+ * `fec_points` — verified against a live key on a real completed event.
+ * `pickNumber`/`pickString` below stay tolerant of alternate key names as
+ * cheap insurance against a future field rename, not because this is in
+ * doubt anymore.
  */
 export class DataGolfProvider implements GolfDataProvider {
   constructor(
@@ -79,18 +79,65 @@ export class DataGolfProvider implements GolfDataProvider {
       .filter((g) => g.name.length > 0);
   }
 
-  async getTournamentResults(tournamentId: string): Promise<GolferResult[]> {
+  async getTournamentResults(tournamentId: string, year: number): Promise<GolferResult[]> {
     const eventId = tournamentId.replace(/^dg-/, "");
-    const raw = await this.get<{ scores?: unknown[]; players?: unknown[] }>(
-      "historical-raw-data/rounds",
-      { tour: this.tour, event_id: eventId }
-    );
-    const rows = (Array.isArray(raw.scores) ? raw.scores : raw.players) ?? [];
+    const raw = await this.get<{ event_stats?: unknown[] }>("historical-event-data/events", {
+      tour: this.tour,
+      event_id: eventId,
+      year: String(year),
+    });
+    const rows = Array.isArray(raw.event_stats) ? raw.event_stats : [];
 
     return (rows as Record<string, unknown>[]).map((row) =>
       mapEventStatsRow(tournamentId, row)
     );
   }
+}
+
+/**
+ * Pulls real per-player results for one event directly by tour/event_id/year
+ * — what the app's own auto-pull job (jobs/resultsPull.ts) actually calls.
+ * Standalone rather than a DataGolfProvider method because it returns rows
+ * shaped for the app's own golfer records (matched by name via
+ * store.ts's upsertGolfer), not a GolferResult keyed by a synthetic
+ * "dg-<id>" — the app's tournaments are identified by their own id, with the
+ * DataGolf event_id kept separately on Tournament.externalEventId.
+ */
+export interface DataGolfResultRow {
+  golferName: string;
+  earnings: number;
+  finishPosition: number | null;
+}
+
+export async function fetchDataGolfEventResults(
+  apiKey: string,
+  tour: string,
+  eventId: string,
+  year: number,
+  fetchImpl: typeof fetch = fetch
+): Promise<DataGolfResultRow[]> {
+  const url = new URL(`${BASE_URL}/historical-event-data/events`);
+  url.searchParams.set("tour", tour);
+  url.searchParams.set("event_id", eventId);
+  url.searchParams.set("year", String(year));
+  url.searchParams.set("file_format", "json");
+  url.searchParams.set("key", apiKey);
+
+  const response = await fetchImpl(url.toString());
+  if (!response.ok) {
+    throw new Error(`DataGolf historical-event-data/events failed: ${response.status} ${response.statusText}`);
+  }
+  const raw = (await response.json()) as { event_stats?: unknown[] };
+  const rows = Array.isArray(raw.event_stats) ? raw.event_stats : [];
+
+  return rows
+    .map((row) => row as Record<string, unknown>)
+    .map((row) => ({
+      golferName: pickString(row, ["player_name"]) ?? "",
+      earnings: pickNumber(row, ["earnings", "money", "prize_money", "purse_won"]) ?? 0,
+      finishPosition: parseFinishPosition(pickString(row, ["fin_text", "finish_position", "finish"])),
+    }))
+    .filter((r) => r.golferName.length > 0);
 }
 
 /**
@@ -121,7 +168,7 @@ export function mapEventStatsRow(
 /**
  * DataGolf reports finishes as text ("1", "T9", "CUT", "WD", "MDF").
  * Anything non-numeric means no finishing position, which the league treats
- * as a missed cut for the $50 Side Pot 1 fine.
+ * as a missed cut for the $50 Side Pot fine.
  */
 export function parseFinishPosition(text: string | null): number | null {
   if (text === null) return null;

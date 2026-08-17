@@ -4,6 +4,7 @@ import type {
   Golfer,
   HearnPick,
   League,
+  NotificationRecord,
   Participant,
   PasswordResetToken,
   Pick,
@@ -30,6 +31,8 @@ export interface LeagueData {
   /** Tournament id -> golfer ids in the field. */
   fields: Record<string, string[]>;
   passwordResetTokens: PasswordResetToken[];
+  /** Dedupe log for scheduled emails (reminders/digests) — see core/notifications.ts. */
+  notifications: NotificationRecord[];
 }
 
 export function emptyLeagueData(): LeagueData {
@@ -45,6 +48,7 @@ export function emptyLeagueData(): LeagueData {
     results: [],
     fields: {},
     passwordResetTokens: [],
+    notifications: [],
   };
 }
 
@@ -95,11 +99,31 @@ export function golferName(data: LeagueData, golferId: string): string {
   return data.golfers.find((g) => g.id === golferId)?.name ?? golferId;
 }
 
-/** Case-insensitive golfer lookup, used to resolve names from pick emails. */
+/**
+ * Normalizes a golfer name for identity comparison: lowercase, strip
+ * punctuation, sort the words. Matches "Scottie Scheffler" against
+ * "Scheffler, Scottie" — the two most common formats this app sees (a
+ * DataGolf field/schedule pull uses "Last, First"; free-text pick/results
+ * entry tends to be "First Last") — so the same real person never ends up
+ * as two different golfer records with two different one-and-done pools.
+ */
+function normalizeGolferName(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[.,]/g, "")
+    .split(/\s+/)
+    .filter(Boolean)
+    .sort()
+    .join(" ");
+}
+
+/** Case-insensitive, word-order-insensitive golfer lookup, used to resolve names from pick emails and free-text entry. */
 export function findGolferByName(data: LeagueData, name: string): Golfer | undefined {
   const needle = name.trim().toLowerCase();
+  const needleNormalized = normalizeGolferName(name);
   return (
     data.golfers.find((g) => g.name.toLowerCase() === needle) ??
+    data.golfers.find((g) => normalizeGolferName(g.name) === needleNormalized) ??
     data.golfers.find((g) => g.name.toLowerCase().includes(needle))
   );
 }

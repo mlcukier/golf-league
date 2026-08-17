@@ -111,7 +111,7 @@ async function main() {
     console.log(`Using event_id=${eventId} year=${year} ${eventName}\n`);
   }
 
-  const stats = await getJson("historical-raw-data/rounds", { tour, event_id: eventId, year });
+  const stats = await getJson("historical-event-data/events", { tour, event_id: eventId, year });
   const rows = firstRowArray(stats);
   if (!rows.length) {
     console.log("No result rows returned. Raw payload (truncated):");
@@ -145,9 +145,8 @@ async function main() {
     console.log("\n   Treat this as NOT usable until you confirm with DataGolf support.");
   } else {
     console.log("\n❌ NO earnings field on this response — only points-style columns.");
-    console.log("   Either this endpoint doesn't carry money on your subscription tier,");
-    console.log("   or earnings live on a different endpoint. Ask DataGolf support:");
-    console.log('   "Does my plan include prize money (earnings) in historical-event-data/event-stats?"');
+    console.log("   historical-event-data/events normally does carry earnings — this would be");
+    console.log("   unusual. Double check the event_id/year, or ask DataGolf support.");
     console.log("\n   The app works fine without it — paste results in the admin Results tab.");
   }
   console.log("=".repeat(64));

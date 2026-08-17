@@ -79,6 +79,10 @@ export const ADMIN_HTML = /* html */ `<!doctype html>
 <header>
   <h1>⛳ Golf League</h1>
   <select id="seasonPicker" data-admin></select>
+  <span class="row" style="margin-left:12px">
+    <input id="nickInput" placeholder="Your nickname" style="width:140px">
+    <button class="act ghost" id="nickGo">Save</button>
+  </span>
   <nav>
     <button data-tab="mypicks" class="on">My Picks</button>
     <button data-tab="myhearn">Hearn Picks</button>
@@ -138,16 +142,25 @@ const oddsLabel = (odds) => (odds == null ? '' : ' (' + (odds > 0 ? '+' : '') + 
  * available), plus any "extra" names that must stay selectable even though
  * they're not in that field — an existing pick/Hearn entry made before the
  * field changed, so it never silently vanishes from the dropdown and gets
- * lost on the next save.
+ * lost on the next save. Names in usedNames (already picked another week
+ * this season — one-and-done) render struck-through and disabled, unless
+ * it's the currently selected option, so switching away from it still works.
  */
-function golferOptionsHtml(field, extraNames, selectedName) {
+function golferOptionsHtml(field, extraNames, selectedName, usedNames) {
   const inField = new Set((field || []).map((g) => g.name));
   const extras = (extraNames || []).filter((n) => n && !inField.has(n)).map((n) => ({ name: n, odds: null }));
   const pool = [...(field || []), ...extras].sort((a, b) => a.name.localeCompare(b.name));
+  const used = usedNames || new Set();
   return (
     '<option value="">—</option>' +
-    pool.map((g) => '<option value="' + esc(g.name) + '"' + (g.name === selectedName ? ' selected' : '') +
-      '>' + esc(g.name) + esc(oddsLabel(g.odds)) + '</option>').join('')
+    pool.map((g) => {
+      const isUsed = used.has(g.name) && g.name !== selectedName;
+      const label = esc(g.name) + esc(oddsLabel(g.odds)) + (isUsed ? ' (used)' : '');
+      return '<option value="' + esc(g.name) + '"' +
+        (g.name === selectedName ? ' selected' : '') +
+        (isUsed ? ' disabled style="text-decoration:line-through;color:var(--muted)"' : '') +
+        '>' + label + '</option>';
+    }).join('')
   );
 }
 
@@ -213,6 +226,14 @@ async function boot() {
   showScreen('app');
   document.querySelectorAll('[data-admin]').forEach((el) => { el.style.display = ME.isAdmin ? '' : 'none'; });
 
+  $('nickInput').value = ME.nickname || '';
+  $('nickGo').onclick = async () => {
+    try {
+      ME = { ...ME, ...(await api('/api/my/nickname', 'PUT', { nickname: $('nickInput').value })) };
+      toast('Nickname saved'); await loadMyState(); if (ME.isAdmin) await loadSeason(); render();
+    } catch (e) { toast(e.message, true); }
+  };
+
   await loadMyState();
   if (ME.isAdmin) await bootAdmin();
   render();
@@ -225,10 +246,19 @@ async function loadMyState() {
 async function bootAdmin() {
   STATE = await api('/api/state');
   const sel = $('seasonPicker');
+  const previous = sel.value; // sticky: rebuilding options below would otherwise silently reset the pick
   sel.innerHTML = STATE.seasons.map((s) => {
     const lg = STATE.leagues.find((l) => l.id === s.leagueId);
     return '<option value="' + s.id + '">' + esc((lg ? lg.name : '?') + ' — ' + s.year + ' (' + s.status + ')') + '</option>';
   }).join('') || '<option value="">No seasons yet</option>';
+
+  // Keep whatever was already selected if it still exists; otherwise default
+  // to the (in practice, singular) ACTIVE season rather than just the first
+  // one in the list, which could easily be an old COMPLETE season.
+  const stillExists = previous && STATE.seasons.some((s) => s.id === previous);
+  const active = STATE.seasons.find((s) => s.status === 'ACTIVE');
+  sel.value = stillExists ? previous : (active ? active.id : (STATE.seasons[0] ? STATE.seasons[0].id : ''));
+
   sel.onchange = loadSeason;
   await loadSeason();
 }
@@ -265,22 +295,25 @@ function standingsTable(rows, report) {
 function potsCardsHtml(report, season, tournaments) {
   const sp = report.sidePot1, gr = report.greller, tocc = report.tocc;
   return (
-    '<div class="card"><h2>Side Pot 1 — Most Top 10s</h2>' +
+    '<div class="card"><h2>Side Pot — Most Top 10s</h2>' +
       '<p class="stat">' + money(sp.balance) + '</p>' +
       '<p class="muted">Funded by ' + money(season.missedCutFine) + ' missed-cut fines</p>' +
-      '<table><tr><th>Participant</th><th class="num">T10</th><th class="num">T5</th><th class="num">Wins</th></tr>' +
+      '<table><tr><th>Participant</th><th class="num">MC</th><th class="num">Owed</th><th class="num">T10</th><th class="num">T5</th><th class="num">Wins</th></tr>' +
       sp.tallies.slice().sort((a,b) => b.top10s - a.top10s || b.top5s - a.top5s || b.wins - a.wins)
-        .map((t) => '<tr><td>' + esc(pname(t.participantId, report)) + '</td><td class="num">' + t.top10s +
+        .map((t) => '<tr><td>' + esc(pname(t.participantId, report)) + '</td><td class="num">' + t.missedCuts +
+          '</td><td class="num">' + money(t.missedCuts * season.missedCutFine) + '</td><td class="num">' + t.top10s +
           '</td><td class="num">' + t.top5s + '</td><td class="num">' + t.wins + '</td></tr>').join('') +
       '</table></div>' +
     '<div class="card"><h2>The Greller</h2>' +
       '<p class="stat">' + money(gr.currentBalance) + '</p>' +
       '<p class="muted">' + money(season.grellerWeeklyContribution) + '/participant/week; won by a unique pick of the winner</p>' +
-      '<table><tr><th>Week</th><th>Winner</th><th class="num">Pot after</th></tr>' +
+      '<table><tr><th>Week</th><th>Winner</th><th class="num">Amount</th><th class="num">Pot after</th></tr>' +
       gr.history.map((w) => {
         const t = tournaments.find((x) => x.id === w.tournamentId);
+        const amount = w.winnerParticipantId ? -w.amountWon : w.contribution;
         return '<tr><td>' + esc(t ? t.name : w.tournamentId) + '</td><td>' +
           (w.winnerParticipantId ? esc(pname(w.winnerParticipantId, report)) : '<span class="muted">rollover</span>') +
+          '</td><td class="num" style="color:' + (amount < 0 ? 'var(--accent)' : 'inherit') + '">' + money(amount) +
           '</td><td class="num">' + money(w.potBalanceAfter) + '</td></tr>';
       }).join('') + '</table></div>' +
     '<div class="card"><h2>TOCC Side Action</h2>' +
@@ -303,12 +336,15 @@ function renderMyPicksTab(el) {
 
   const pt = MY.pickTarget;
   const existingName = MY.existingPick ? MY.existingPick.golferName : null;
+  const usedNames = new Set(
+    MY.myPicks.filter((p) => !pt || p.tournamentId !== pt.id).map((p) => p.golferName)
+  );
   const pickCard = pt
     ? '<div class="card"><h2>' + esc(pt.name) + '</h2>' +
         '<p class="muted">Deadline: ' + new Date(pt.startTime).toLocaleString() +
         (existingName ? ' · Current pick: <strong>' + esc(existingName) + '</strong>' : '') + '</p>' +
         '<div class="row">' +
-          '<select id="myPickG" style="min-width:240px">' + golferOptionsHtml(pt.field, [existingName], existingName) + '</select>' +
+          '<select id="myPickG" style="min-width:240px">' + golferOptionsHtml(pt.field, [existingName], existingName, usedNames) + '</select>' +
           '<button class="act" id="myPickGo">' + (existingName ? 'Update pick' : 'Submit pick') + '</button>' +
         '</div></div>'
     : '<div class="card"><p class="muted">No upcoming tournament open for picks right now.</p></div>';
@@ -323,11 +359,11 @@ function renderMyPicksTab(el) {
   const q = MY.report.quarterStandings || {};
   el.innerHTML =
     pickCard +
-    '<div class="card"><h2>Your picks this season</h2>' + picksTable + '</div>' +
     '<div class="card"><h2>Season Standings</h2>' + standingsTable(MY.report.seasonStandings, MY.report) + '</div>' +
     '<div class="grid2">' + [1,2,3,4].map((n) =>
       '<div class="card"><h2>Quarter ' + n + '</h2>' + standingsTable(q[n], MY.report) + '</div>').join('') + '</div>' +
-    '<div class="grid2">' + potsCardsHtml(MY.report, MY.season, MY.tournaments) + '</div>';
+    '<div class="grid2">' + potsCardsHtml(MY.report, MY.season, MY.tournaments) + '</div>' +
+    '<div class="card"><h2>Your picks this season</h2>' + picksTable + '</div>';
 
   if (pt) {
     $('myPickGo').onclick = async () => {
@@ -517,7 +553,7 @@ function renderResults(el) {
     '</div>' +
     '<textarea id="rTxt" placeholder="One per line:  Golfer Name, earnings, finish\\nScottie Scheffler, 3600000, 1\\nJordan Spieth, 0, CUT"></textarea>' +
     '<div class="row" style="margin-top:8px"><button class="act" id="rGo">Save results</button></div>' +
-    '<p class="muted">Finish of CUT/WD/MDF (or blank) counts as a missed cut and triggers the Side Pot 1 fine.</p></div>';
+    '<p class="muted">Finish of CUT/WD/MDF (or blank) counts as a missed cut and triggers the Side Pot fine.</p></div>';
 
   $('rGo').onclick = async () => {
     const rows = $('rTxt').value.split('\\n').map((l) => l.trim()).filter(Boolean).map((line) => {
@@ -538,18 +574,19 @@ function renderRoster(el) {
   const tocc = new Set(REPORT.toccMembers.map((e) => e.participantId));
   el.innerHTML =
     '<div class="card"><h2>Add participant</h2><p class="muted">They\\'ll be emailed a link to set their own password.</p><div class="row">' +
-      '<input id="npName" placeholder="Name"><input id="npEmail" placeholder="email@example.com">' +
+      '<input id="npName" placeholder="Name"><input id="npNick" placeholder="Nickname (optional)"><input id="npEmail" placeholder="email@example.com">' +
       '<button class="act" id="npGo">Add</button></div></div>' +
-    '<div class="card"><h2>Season roster</h2><table>' +
-      '<tr><th>Name</th><th>Email</th><th>In season</th><th>TOCC</th></tr>' +
-      STATE.participants.map((p) => '<tr><td>' + esc(p.name) + '</td><td class="muted">' + esc(p.email) +
+    '<div class="card"><h2>Season roster</h2><p class="muted">Nickname is what other participants see instead of Name.</p><table>' +
+      '<tr><th>Name</th><th>Nickname</th><th>Email</th><th>In season</th><th>TOCC</th></tr>' +
+      STATE.participants.map((p) => '<tr><td>' + esc(p.name) + '</td><td><input data-nick="' + p.id +
+        '" value="' + esc(p.nickname || '') + '" style="width:120px"></td><td class="muted">' + esc(p.email) +
         '</td><td><input type="checkbox" data-in="' + p.id + '"' + (inSeason.has(p.id) ? ' checked' : '') +
         '></td><td><input type="checkbox" data-tocc="' + p.id + '"' + (tocc.has(p.id) ? ' checked' : '') +
         (inSeason.has(p.id) ? '' : ' disabled') + '></td></tr>').join('') + '</table></div>';
 
   $('npGo').onclick = async () => {
     try {
-      await api('/api/participants', 'POST', { name: $('npName').value, email: $('npEmail').value });
+      await api('/api/participants', 'POST', { name: $('npName').value, nickname: $('npNick').value, email: $('npEmail').value });
       toast('Participant added and emailed a password-setup link'); STATE = await api('/api/state'); render();
     } catch (e) { toast(e.message, true); }
   };
@@ -562,6 +599,14 @@ function renderRoster(el) {
   };
   el.querySelectorAll('[data-in]').forEach((c) => {
     c.onclick = () => save(c.dataset.in, c.checked, tocc.has(c.dataset.in));
+  });
+  el.querySelectorAll('[data-nick]').forEach((inp) => {
+    inp.onchange = async () => {
+      try {
+        await api('/api/participants/' + inp.dataset.nick + '/nickname', 'PUT', { nickname: inp.value });
+        toast('Nickname saved'); STATE = await api('/api/state');
+      } catch (e) { toast(e.message, true); }
+    };
   });
   el.querySelectorAll('[data-tocc]').forEach((c) => {
     c.onclick = () => save(c.dataset.tocc, true, c.checked);

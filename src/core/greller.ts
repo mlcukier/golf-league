@@ -7,6 +7,8 @@ export interface GrellerWeekResult {
   contribution: number;
   /** Participant who uniquely picked the tournament winner, if any. */
   winnerParticipantId: string | null;
+  /** The full pot paid out this week, only set when winnerParticipantId is set. */
+  amountWon: number | null;
   /** Pot balance after this week's contribution and (if won) payout. */
   potBalanceAfter: number;
 }
@@ -45,6 +47,7 @@ export function computeGrellerHistory(
       }
     }
 
+    const amountWon = winnerParticipantId ? pot : null;
     if (winnerParticipantId) {
       pot = 0;
     }
@@ -53,6 +56,7 @@ export function computeGrellerHistory(
       tournamentId: tournament.id,
       contribution,
       winnerParticipantId,
+      amountWon,
       potBalanceAfter: pot,
     });
   }

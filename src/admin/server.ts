@@ -4,6 +4,7 @@ import type { LeagueStore } from "../store/store.js";
 import {
   findGolferByName,
   findParticipantByEmail,
+  golferName,
   seasonPicks,
   seasonRoster,
   seasonTournaments,
@@ -27,14 +28,14 @@ import {
   verifySession,
 } from "../core/auth.js";
 import { executeCommand } from "../email/commands.js";
-import { renderSetPasswordEmail } from "../email/templates.js";
+import { renderResultsDigestEmail, renderSetPasswordEmail } from "../email/templates.js";
 import { getAuthedClient, sendEmail, type OAuth2Client } from "../email/gmailClient.js";
 import { createOddsCache, oddsForTournament, type OddsCache } from "../providers/dataGolfOdds.js";
 import { createPlayerListCache, type PlayerListCache } from "../providers/dataGolfPlayers.js";
 import type { Participant, Season } from "../types.js";
 import { ADMIN_HTML } from "./html.js";
 
-type SendMail = (args: { to: string; subject: string; bodyText: string }) => Promise<void>;
+export type SendMail = (args: { to: string; subject: string; bodyText: string; bodyHtml?: string }) => Promise<void>;
 type RouteAuth = "public" | "auth" | "admin";
 
 interface Route {
@@ -75,7 +76,14 @@ function requireSeason(data: LeagueData, seasonId: string): Season {
 }
 
 function meShape(p: Participant) {
-  return { id: p.id, name: p.name, email: p.email, isAdmin: Boolean(p.isAdmin), hasPassword: Boolean(p.passwordHash) };
+  return {
+    id: p.id,
+    name: p.name,
+    nickname: p.nickname ?? null,
+    email: p.email,
+    isAdmin: Boolean(p.isAdmin),
+    hasPassword: Boolean(p.passwordHash),
+  };
 }
 
 function describeLookupFailure(failure: string | undefined): string {
@@ -89,6 +97,85 @@ function describeLookupFailure(failure: string | undefined): string {
     default:
       return "Something went wrong resolving your season.";
   }
+}
+
+/**
+ * Emails the roster of a tournament's season everyone's pick and how it did,
+ * best-effort. Fires every time results are (re)posted for that tournament —
+ * event-driven off the admin action, not a scheduled sweep, so an edited
+ * result correctly sends an updated digest rather than needing dedupe state.
+ * Runs for test leagues too (by design, so they're usable as a live
+ * rehearsal) — sends to whatever's on the roster, real or fake addresses.
+ */
+async function sendResultsDigest(data: LeagueData, tournamentId: string, sendMail: SendMail): Promise<void> {
+  const tournament = data.tournaments.find((t) => t.id === tournamentId);
+  if (!tournament) return;
+  const season = data.seasons.find((s) => s.id === tournament.seasonId);
+  if (!season) return;
+
+  const roster = seasonRoster(data, season.id);
+  if (roster.length === 0) return;
+  const weekPicks = seasonPicks(data, season.id).filter((p) => p.tournamentId === tournamentId);
+  const resultByGolfer = new Map(
+    data.results.filter((r) => r.tournamentId === tournamentId).map((r) => [r.golferId, r])
+  );
+
+  const rows = roster.map((p) => {
+    const pick = weekPicks.find((wp) => wp.participantId === p.id);
+    const result = pick ? resultByGolfer.get(pick.golferId) : undefined;
+    return {
+      name: p.nickname || p.name,
+      golferName: pick ? golferName(data, pick.golferId) : null,
+      earnings: result?.earnings ?? 0,
+      finishPosition: result?.finishPosition ?? null,
+    };
+  });
+
+  const { subject, bodyText, bodyHtml } = renderResultsDigestEmail(tournament.name, rows);
+  const recipients = roster.map((p) => p.email).join(", ");
+  try {
+    await sendMail({ to: recipients, subject, bodyText, bodyHtml });
+  } catch (err) {
+    console.error(`Failed to send results digest for ${tournament.name}:`, err);
+  }
+}
+
+export interface ResultRow {
+  golferName: string;
+  earnings: number;
+  finishPosition: number | null;
+}
+
+/**
+ * Replaces a tournament's results and sends the results digest — the one
+ * path both the admin paste route and the DataGolf auto-pull job
+ * (jobs/resultsPull.ts) go through, so "results changed" always means the
+ * same thing regardless of where the rows came from.
+ */
+export async function applyResults(
+  store: LeagueStore,
+  tournamentId: string,
+  rows: ResultRow[],
+  sendMail: SendMail
+): Promise<number> {
+  const updated = await store.update((d) => {
+    d.results = d.results.filter((r) => r.tournamentId !== tournamentId);
+    for (const row of rows) {
+      const golfer = upsertGolfer(d, row.golferName);
+      d.results.push({
+        tournamentId,
+        golferId: golfer.id,
+        earnings: row.earnings,
+        finishPosition: row.finishPosition,
+        madeCut: row.finishPosition !== null,
+        isWin: row.finishPosition === 1,
+        isTop5: row.finishPosition !== null && row.finishPosition <= 5,
+        isTop10: row.finishPosition !== null && row.finishPosition <= 10,
+      });
+    }
+  });
+  await sendResultsDigest(updated, tournamentId, sendMail);
+  return rows.length;
 }
 
 /** Creates (or replaces) a one-time password link for a participant and emails it, best-effort. */
@@ -105,9 +192,9 @@ async function issuePasswordEmail(
     d.passwordResetTokens.push({ token, participantId: participant.id, expiresAt });
   });
   const link = `${baseUrl}/?setpw=${token}`;
-  const { subject, bodyText } = renderSetPasswordEmail(link, Boolean(participant.passwordHash));
+  const { subject, bodyText, bodyHtml } = renderSetPasswordEmail(link, Boolean(participant.passwordHash));
   try {
-    await sendMail({ to: participant.email, subject, bodyText });
+    await sendMail({ to: participant.email, subject, bodyText, bodyHtml });
   } catch (err) {
     console.error(`Failed to send password email to ${participant.email}:`, err);
   }
@@ -325,6 +412,20 @@ const routes: Route[] = [
       return { ok: true, count: names.length };
     },
   },
+  {
+    /** Sets the caller's own display nickname, shown to other participants instead of their name. */
+    method: "PUT",
+    pattern: /^\/api\/my\/nickname$/,
+    auth: "auth",
+    handler: async ({ me, body, store }) => {
+      const nickname = String(body.nickname ?? "").trim();
+      await store.update((d) => {
+        const participant = d.participants.find((p) => p.id === me!.id);
+        if (participant) participant.nickname = nickname.length > 0 ? nickname : null;
+      });
+      return { ok: true, nickname: nickname.length > 0 ? nickname : null };
+    },
+  },
 
   // ---- overview (admin) -------------------------------------------------------
   {
@@ -479,9 +580,11 @@ const routes: Route[] = [
     pattern: /^\/api\/participants$/,
     auth: "admin",
     handler: async ({ body, store, baseUrl, sendMail }) => {
+      const nickname = body.nickname ? String(body.nickname).trim() : "";
       const participant: Participant = {
         id: `p-${randomUUID().slice(0, 8)}`,
         name: String(body.name),
+        nickname: nickname.length > 0 ? nickname : null,
         email: String(body.email).toLowerCase(),
         isAdmin: false,
         passwordHash: null,
@@ -495,6 +598,21 @@ const routes: Route[] = [
       });
       await issuePasswordEmail(store, sendMail, baseUrl, participant);
       return participant;
+    },
+  },
+  {
+    /** Admin override of any participant's nickname (self-service is /api/my/nickname). */
+    method: "PUT",
+    pattern: /^\/api\/participants\/([^/]+)\/nickname$/,
+    auth: "admin",
+    handler: async ({ params, body, store }) => {
+      const nickname = String(body.nickname ?? "").trim();
+      await store.update((d) => {
+        const participant = d.participants.find((p) => p.id === params[0]!);
+        if (!participant) throw new HttpError(404, `No participant ${params[0]}`);
+        participant.nickname = nickname.length > 0 ? nickname : null;
+      });
+      return { ok: true, nickname: nickname.length > 0 ? nickname : null };
     },
   },
   {
@@ -629,35 +747,24 @@ const routes: Route[] = [
     /**
      * Posts results for a tournament. Accepts rows of
      * { golferName, earnings, finishPosition } — finishPosition null/absent
-     * means missed the cut, which triggers the Side Pot 1 fine.
+     * means missed the cut, which triggers the Side Pot fine.
      */
     method: "PUT",
     pattern: /^\/api\/tournaments\/([^/]+)\/results$/,
     auth: "admin",
-    handler: async ({ params, body, store }) => {
+    handler: async ({ params, body, store, sendMail }) => {
       const tournamentId = params[0]!;
-      const rows = (body.results as Record<string, unknown>[]) ?? [];
-      await store.update((d) => {
-        d.results = d.results.filter((r) => r.tournamentId !== tournamentId);
-        for (const row of rows) {
-          const golfer = upsertGolfer(d, String(row.golferName));
-          const finishPosition =
-            row.finishPosition === null || row.finishPosition === undefined || row.finishPosition === ""
-              ? null
-              : Number(row.finishPosition);
-          d.results.push({
-            tournamentId,
-            golferId: golfer.id,
-            earnings: Number(row.earnings ?? 0),
-            finishPosition,
-            madeCut: finishPosition !== null,
-            isWin: finishPosition === 1,
-            isTop5: finishPosition !== null && finishPosition <= 5,
-            isTop10: finishPosition !== null && finishPosition <= 10,
-          });
-        }
-      });
-      return { ok: true, count: rows.length };
+      const rawRows = (body.results as Record<string, unknown>[]) ?? [];
+      const rows: ResultRow[] = rawRows.map((row) => ({
+        golferName: String(row.golferName),
+        earnings: Number(row.earnings ?? 0),
+        finishPosition:
+          row.finishPosition === null || row.finishPosition === undefined || row.finishPosition === ""
+            ? null
+            : Number(row.finishPosition),
+      }));
+      const count = await applyResults(store, tournamentId, rows, sendMail);
+      return { ok: true, count };
     },
   },
 
@@ -833,14 +940,9 @@ export interface AdminServerOptions {
   dataGolfApiKey?: string;
 }
 
-export function createAdminServer(options: AdminServerOptions) {
-  const { store, gmailStateDir } = options;
-  const sessionSecret = options.sessionSecret ?? randomUUID();
-  const secureCookies = process.env.NODE_ENV === "production";
-  const oddsCache = options.dataGolfApiKey ? createOddsCache(options.dataGolfApiKey) : null;
-  const playerListCache = options.dataGolfApiKey ? createPlayerListCache(options.dataGolfApiKey) : null;
-
-  const sendMail: SendMail = async (args) => {
+/** Builds the SendMail used both by the HTTP server and the standalone notification sweep (see jobs/notifications.ts). */
+export function createSendMail(gmailStateDir?: string): SendMail {
+  return async (args) => {
     if (!gmailStateDir) {
       console.warn(`GMAIL_STATE_DIR not configured — skipping email "${args.subject}" to ${args.to}`);
       return;
@@ -848,6 +950,15 @@ export function createAdminServer(options: AdminServerOptions) {
     const auth = await getMailAuth(gmailStateDir);
     await sendEmail(auth, args);
   };
+}
+
+export function createAdminServer(options: AdminServerOptions) {
+  const { store, gmailStateDir } = options;
+  const sessionSecret = options.sessionSecret ?? randomUUID();
+  const secureCookies = process.env.NODE_ENV === "production";
+  const oddsCache = options.dataGolfApiKey ? createOddsCache(options.dataGolfApiKey) : null;
+  const playerListCache = options.dataGolfApiKey ? createPlayerListCache(options.dataGolfApiKey) : null;
+  const sendMail = createSendMail(gmailStateDir);
 
   return createServer((req: IncomingMessage, res: ServerResponse) => {
     void (async () => {

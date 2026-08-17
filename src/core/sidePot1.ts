@@ -26,18 +26,19 @@ export function computeSidePot1Balance(
 
 export interface SidePot1Tally {
   participantId: string;
+  missedCuts: number;
   top10s: number;
   top5s: number;
   wins: number;
 }
 
-/** Per-participant counts of top-10/top-5/win finishes among their own picks, for standings display. */
+/** Per-participant counts of missed cuts and top-10/top-5/win finishes among their own picks, for standings display. */
 export function computeSidePot1Tallies(picks: Pick[], results: GolferResult[]): SidePot1Tally[] {
   const tallies = new Map<string, SidePot1Tally>();
   const get = (participantId: string) => {
     let t = tallies.get(participantId);
     if (!t) {
-      t = { participantId, top10s: 0, top5s: 0, wins: 0 };
+      t = { participantId, missedCuts: 0, top10s: 0, top5s: 0, wins: 0 };
       tallies.set(participantId, t);
     }
     return t;
@@ -47,6 +48,7 @@ export function computeSidePot1Tallies(picks: Pick[], results: GolferResult[]): 
     const result = resultFor(pick, results);
     if (!result) continue;
     const t = get(pick.participantId);
+    if (!result.madeCut) t.missedCuts += 1;
     if (result.isTop10) t.top10s += 1;
     if (result.isTop5) t.top5s += 1;
     if (result.isWin) t.wins += 1;

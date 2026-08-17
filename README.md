@@ -3,7 +3,7 @@
 Season-long "one and done" golf pool: each participant picks a different PGA
 Tour golfer every week and earns that golfer's tournament winnings. The season
 opens Jan 1 and closes with the second FedEx Cup playoff event. Tracks the
-season race, four quarterly races, three side pots (Side Pot 1, the Greller,
+season race, four quarterly races, three side pots (Side Pot, the Greller,
 TOCC), and Hearn-pick fallbacks — across multiple years and multiple leagues.
 
 Everyone — participants and the admin alike — uses one web app: log in with
@@ -43,7 +43,7 @@ password. The page has no build step and works on a phone.
 | **Pick deadline** | A pick must be **submitted strictly before the tournament's start time**. At/after the start is rejected. |
 | **Season winner** | Highest total earnings across the season. |
 | **Quarterly winners** | The season's tournaments split into **4 equal segments by event count**; highest earnings in each. |
-| **Side Pot 1** | Funded by $50 per missed cut. Won by the participant whose picks produced the most top-10s; ties break on top-5s, then wins. |
+| **Side Pot** | Funded by $50 per missed cut. Won by the participant whose picks produced the most top-10s; ties break on top-5s, then wins. |
 | **The Greller** | $10/participant/week. Won when a participant picks the tournament winner **and nobody else picked that golfer**. Pot resets on a win, rolls over otherwise. |
 | **TOCC side action** | Among the TOCC subgroup only. Best weekly earnings wins **$100 from each** other member; 2nd place breaks even. Stake **doubles to $200** each when the winning pick also won the tournament outright. |
 | **Hearn picks** | A static, ordered fallback list per participant. If no pick arrives before the start, the engine assigns the highest-ranked Hearn golfer that is unused this season and in the field. |
@@ -65,19 +65,23 @@ duplicate golfer" bug that an end-to-end run caught during development.
 
 ## Data source: DataGolf
 
-**Confirmed against a live key: no prize-money field exists on this plan.**
-The endpoint originally assumed from DataGolf's docs
-(`historical-event-data/event-stats`) doesn't exist — it 404s. The real
-per-event results endpoint is `historical-raw-data/rounds`, and its rows
-carry detailed strokes-gained/round stats and a finish (`fin_text`), but no
-earnings/money field of any kind. Schedule (`get-schedule`) and this week's
-field (`field-updates`) work fine and are date/player data only, no money
-involved either way.
+**Confirmed against a live key: real prize money is available, on
+`historical-event-data/events`.** Two endpoints were tried and ruled out
+first: `historical-event-data/event-stats` (assumed from docs alone) doesn't
+exist — it 404s; `historical-raw-data/rounds` is real but carries only
+strokes-gained/round stats and a finish (`fin_text`), no money. The one that
+works is `historical-event-data/events?tour=&event_id=&year=` — its
+`event_stats` rows carry `earnings`, `fin_text`, and `fec_points`
+(FedExCup points) per player, and it updates fast: the 2026 FedEx St. Jude
+Championship's real results (Scheffler's $3.6M win included) were already
+live on the API the day after the event finished. Schedule (`get-schedule`)
+and this week's field (`field-updates`) were always fine — date/player data,
+no money involved either way.
 
-`src/providers/dataGolfProvider.ts` still reads results through tolerant
+`src/providers/dataGolfProvider.ts` reads results through tolerant
 extractors (`earnings`, `money`, `prize_money`, `purse_won`, `winnings`,
-`payout`) in case a future endpoint or higher tier adds one — re-run the
-classifier below if your plan ever changes:
+`payout`) in case a field ever gets renamed — re-run the classifier below to
+double-check on any plan:
 
 ```bash
 DATAGOLF_API_KEY=xxxx npm run verify:datagolf
@@ -90,10 +94,11 @@ only ~500-750 FedEx points. The classifier itself is unit tested
 (`src/test/verifyClassifier.test.ts`), including the `fedex_points_earned`
 trap where a field name contains "earn" but is really points.
 
-**Since earnings aren't available**, nothing is blocked: the admin
-**Results** tab accepts pasted results (`Golfer, earnings, finish`) with no
-API involved. Prize money is also printed on every tournament leaderboard, so
-a weekly copy-paste is the real path for this league.
+**`getTournamentResults` isn't wired into the running app yet** — the admin
+**Results** tab still takes pasted results (`Golfer, earnings, finish`), which
+remains the live path today. Now that real earnings are confirmed available,
+auto-pulling results for a finished tournament is a real option for a future
+pass — this just documents that the data is there.
 
 ### Seeding the schedule and field from DataGolf
 
@@ -293,6 +298,6 @@ Flag anything that doesn't match how the league actually plays:
 - **TOCC ranking** uses weekly prize money — the same metric as the season race.
 - **TOCC ties** (unspecified in the rules as given): a tie for 1st splits the
   collected stake evenly; a tie for 2nd means everyone tied there breaks even.
-- **Side Pot 1 ties** that survive all three tiebreakers split the pot.
+- **Side Pot ties** that survive all three tiebreakers split the pot.
 - **A participant with no valid Hearn pick** takes a zero for the week; they
   are never assigned a repeat golfer, and the admin UI flags the situation.

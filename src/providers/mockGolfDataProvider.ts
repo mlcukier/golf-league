@@ -20,7 +20,7 @@ export class MockGolfDataProvider implements GolfDataProvider {
     return this.fieldsByTournament.get(tournamentId) ?? [];
   }
 
-  async getTournamentResults(tournamentId: string): Promise<GolferResult[]> {
+  async getTournamentResults(tournamentId: string, _year: number): Promise<GolferResult[]> {
     return this.resultsByTournament.get(tournamentId) ?? [];
   }
 }

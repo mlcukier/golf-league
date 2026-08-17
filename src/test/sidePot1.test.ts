@@ -37,33 +37,33 @@ describe("computeSidePot1Balance", () => {
 describe("computeSidePot1Tallies + determineSidePot1Winners", () => {
   it("crowns the participant with the most top-10 picks", () => {
     const winners = determineSidePot1Winners(computeSidePot1Tallies(picks, results));
-    expect(winners).toEqual([{ participantId: "p1", top10s: 2, top5s: 1, wins: 1 }]);
+    expect(winners).toEqual([{ participantId: "p1", missedCuts: 0, top10s: 2, top5s: 1, wins: 1 }]);
   });
 
   it("breaks a top-10 tie using top-5s", () => {
     const tallies = [
-      { participantId: "a", top10s: 3, top5s: 1, wins: 0 },
-      { participantId: "b", top10s: 3, top5s: 2, wins: 0 },
+      { participantId: "a", missedCuts: 0, top10s: 3, top5s: 1, wins: 0 },
+      { participantId: "b", missedCuts: 0, top10s: 3, top5s: 2, wins: 0 },
     ];
     expect(determineSidePot1Winners(tallies)).toEqual([
-      { participantId: "b", top10s: 3, top5s: 2, wins: 0 },
+      { participantId: "b", missedCuts: 0, top10s: 3, top5s: 2, wins: 0 },
     ]);
   });
 
   it("falls through to most wins when top-10s and top-5s are level", () => {
     const tallies = [
-      { participantId: "a", top10s: 3, top5s: 2, wins: 0 },
-      { participantId: "b", top10s: 3, top5s: 2, wins: 1 },
+      { participantId: "a", missedCuts: 0, top10s: 3, top5s: 2, wins: 0 },
+      { participantId: "b", missedCuts: 0, top10s: 3, top5s: 2, wins: 1 },
     ];
     expect(determineSidePot1Winners(tallies)).toEqual([
-      { participantId: "b", top10s: 3, top5s: 2, wins: 1 },
+      { participantId: "b", missedCuts: 0, top10s: 3, top5s: 2, wins: 1 },
     ]);
   });
 
   it("splits the pot on a true tie across every tiebreaker", () => {
     const tallies = [
-      { participantId: "a", top10s: 2, top5s: 1, wins: 1 },
-      { participantId: "b", top10s: 2, top5s: 1, wins: 1 },
+      { participantId: "a", missedCuts: 1, top10s: 2, top5s: 1, wins: 1 },
+      { participantId: "b", missedCuts: 2, top10s: 2, top5s: 1, wins: 1 },
     ];
     expect(determineSidePot1Winners(tallies)).toEqual(tallies);
   });

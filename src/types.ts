@@ -44,6 +44,12 @@ export interface Participant {
   id: string;
   name: string;
   email: string;
+  /**
+   * Optional display name shown to other participants in standings, pots,
+   * and picks instead of `name` — lets someone go by "Dreifuss" instead of
+   * their legal name without affecting login (still by email) or admin views.
+   */
+  nickname?: string | null;
   /** Unlocks the admin views on the web app. Defaults to false/undefined for everyone else. */
   isAdmin?: boolean;
   /** Null until they've set a password via the emailed set-password link. */
@@ -54,6 +60,22 @@ export interface Participant {
    * without needing a server-side session table.
    */
   passwordSetAt?: string | null;
+}
+
+/**
+ * Dedupe record for a scheduled email so a periodic sweep never sends the
+ * same nudge/digest twice. PICKS_DIGEST is one record per tournament (a
+ * single broadcast email); PICK_REMINDER is one record per participant, since
+ * each non-picker is nudged individually.
+ */
+export type NotificationType = "PICK_REMINDER" | "PICKS_DIGEST";
+
+export interface NotificationRecord {
+  type: NotificationType;
+  tournamentId: string;
+  /** Set only for PICK_REMINDER. */
+  participantId?: string;
+  sentAt: string; // ISO datetime
 }
 
 /** A one-time link for setting or resetting a participant's password, emailed to them. */

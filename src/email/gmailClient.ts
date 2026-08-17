@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
 import path from "node:path";
 import { google } from "googleapis";
 
@@ -46,6 +47,18 @@ function encodeBase64Url(raw: string): string {
     .replace(/\+/g, "-")
     .replace(/\//g, "_")
     .replace(/=+$/g, "");
+}
+
+/**
+ * RFC 2047 encodes a header value if it has any non-ASCII characters (an em
+ * dash, a golfer's accented name, etc.) — raw UTF-8 bytes in a header like
+ * Subject aren't valid RFC 5322 and get mangled by mail clients into mojibake
+ * (an em dash showing up as "Ã¢Â€Â”"). The body text doesn't need this: it's
+ * covered by the part's own Content-Type: charset=UTF-8 declaration.
+ */
+export function encodeHeaderValue(value: string): string {
+  if (/^[\x00-\x7F]*$/.test(value)) return value;
+  return `=?UTF-8?B?${Buffer.from(value, "utf8").toString("base64")}?=`;
 }
 
 function headerValue(headers: { name?: string | null; value?: string | null }[], name: string): string {
@@ -197,7 +210,7 @@ export async function sendThreadReply(
   const subject = args.subject.toLowerCase().startsWith("re:") ? args.subject : `Re: ${args.subject}`;
   const raw = [
     `To: ${args.to}`,
-    `Subject: ${subject}`,
+    `Subject: ${encodeHeaderValue(subject)}`,
     `In-Reply-To: ${args.threadId}`,
     `References: ${args.threadId}`,
     'Content-Type: text/plain; charset="UTF-8"',
@@ -211,19 +224,51 @@ export async function sendThreadReply(
   });
 }
 
-/** A plain, non-threaded email — used for password-setup links and (later) digests/reminders. */
+/**
+ * A plain, non-threaded email — used for password-setup links and
+ * reminders/digests. When bodyHtml is given, sends multipart/alternative
+ * (plain text + HTML) so it renders nicely in a mail client but still has a
+ * sane plain-text fallback.
+ */
 export async function sendEmail(
   auth: OAuth2Client,
-  args: { to: string; subject: string; bodyText: string }
+  args: { to: string; subject: string; bodyText: string; bodyHtml?: string }
 ): Promise<void> {
   const gmail = google.gmail({ version: "v1", auth });
-  const raw = [
+  const bodyHtml = args.bodyHtml;
+  const raw = bodyHtml ? buildMultipartRaw({ ...args, bodyHtml }) : buildPlainRaw(args);
+  await gmail.users.messages.send({ userId: "me", requestBody: { raw: encodeBase64Url(raw) } });
+}
+
+function buildPlainRaw(args: { to: string; subject: string; bodyText: string }): string {
+  return [
     `To: ${args.to}`,
-    `Subject: ${args.subject}`,
+    `Subject: ${encodeHeaderValue(args.subject)}`,
     'Content-Type: text/plain; charset="UTF-8"',
     "",
     args.bodyText,
     "",
   ].join("\r\n");
-  await gmail.users.messages.send({ userId: "me", requestBody: { raw: encodeBase64Url(raw) } });
+}
+
+function buildMultipartRaw(args: { to: string; subject: string; bodyText: string; bodyHtml: string }): string {
+  const boundary = `bnd_${randomBytes(12).toString("hex")}`;
+  return [
+    `To: ${args.to}`,
+    `Subject: ${encodeHeaderValue(args.subject)}`,
+    `Content-Type: multipart/alternative; boundary="${boundary}"`,
+    "",
+    `--${boundary}`,
+    'Content-Type: text/plain; charset="UTF-8"',
+    "",
+    args.bodyText,
+    "",
+    `--${boundary}`,
+    'Content-Type: text/html; charset="UTF-8"',
+    "",
+    args.bodyHtml,
+    "",
+    `--${boundary}--`,
+    "",
+  ].join("\r\n");
 }

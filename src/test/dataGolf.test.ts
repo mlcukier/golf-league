@@ -1,5 +1,14 @@
-import { describe, expect, it } from "vitest";
-import { mapEventStatsRow, parseFinishPosition } from "../providers/dataGolfProvider.js";
+import { describe, expect, it, vi } from "vitest";
+import { fetchDataGolfEventResults, mapEventStatsRow, parseFinishPosition } from "../providers/dataGolfProvider.js";
+
+function fakeFetch(body: unknown, ok = true): typeof fetch {
+  return vi.fn().mockResolvedValue({
+    ok,
+    status: ok ? 200 : 500,
+    statusText: ok ? "OK" : "Server Error",
+    json: async () => body,
+  }) as unknown as typeof fetch;
+}
 
 describe("parseFinishPosition", () => {
   it("reads plain and tied finishes", () => {
@@ -59,5 +68,44 @@ describe("mapEventStatsRow", () => {
     const result = mapEventStatsRow("t1", { dg_id: 5, fin_text: "T10", earnings: 200000 });
     expect(result.isTop10).toBe(true);
     expect(result.isTop5).toBe(false);
+  });
+});
+
+describe("fetchDataGolfEventResults", () => {
+  it("maps event_stats rows to golferName/earnings/finishPosition", async () => {
+    const fetchImpl = fakeFetch({
+      event_id: "6",
+      event_stats: [
+        { dg_id: 1, player_name: "Gotterup, Chris", fin_text: "1", earnings: 1638000 },
+        { dg_id: 2, player_name: "Gerard, Ryan", fin_text: "CUT", earnings: 0 },
+      ],
+    });
+
+    const rows = await fetchDataGolfEventResults("key", "pga", "6", 2026, fetchImpl);
+    expect(rows).toEqual([
+      { golferName: "Gotterup, Chris", earnings: 1638000, finishPosition: 1 },
+      { golferName: "Gerard, Ryan", earnings: 0, finishPosition: null },
+    ]);
+  });
+
+  it("returns an empty array when the event hasn't been posted yet", async () => {
+    const rows = await fetchDataGolfEventResults("key", "pga", "999", 2026, fakeFetch({ event_stats: [] }));
+    expect(rows).toEqual([]);
+  });
+
+  it("throws on a non-ok response", async () => {
+    await expect(
+      fetchDataGolfEventResults("key", "pga", "6", 2026, fakeFetch({}, false))
+    ).rejects.toThrow(/500/);
+  });
+
+  it("skips rows with no player name", () => {
+    return fetchDataGolfEventResults(
+      "key",
+      "pga",
+      "6",
+      2026,
+      fakeFetch({ event_stats: [{ dg_id: 1, fin_text: "1", earnings: 100 }] })
+    ).then((rows) => expect(rows).toEqual([]));
   });
 });

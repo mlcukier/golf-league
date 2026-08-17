@@ -14,6 +14,7 @@ describe("computeGrellerHistory", () => {
       tournamentId: "t1",
       contribution: 30,
       winnerParticipantId: "p1",
+      amountWon: 30,
       potBalanceAfter: 0,
     });
   });
@@ -26,6 +27,7 @@ describe("computeGrellerHistory", () => {
       tournamentId: "t1",
       contribution: 30,
       winnerParticipantId: null,
+      amountWon: null,
       potBalanceAfter: 30,
     });
   });
@@ -53,6 +55,7 @@ describe("computeGrellerHistory", () => {
       tournamentId: "t2",
       contribution: 30,
       winnerParticipantId: "p1",
+      amountWon: 60,
       potBalanceAfter: 0,
     });
   });
