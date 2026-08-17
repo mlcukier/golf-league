@@ -128,4 +128,35 @@ describe("buildSeasonReport — payouts", () => {
     expect(report.payouts.quarters[1]).toEqual([{ participantId: "p1", amount: 30 }]);
     expect(report.payouts.quarters[4]).toEqual([{ participantId: "p2", amount: 30 }]);
   });
+
+  it("pays out nothing at all — overall or any quarter — before any results are posted", () => {
+    // Everyone ties at $0 with zero results in; without the gate this used
+    // to fold the whole roster into one tie group and split every paid
+    // place evenly across all of them, including people effectively in
+    // 4th/5th/6th and places the schedule never even defined (e.g. a 3rd
+    // place payout on a quarter schedule that only pays 1st/2nd).
+    const data = baseData({
+      seasons: [
+        {
+          ...baseData().seasons[0]!,
+          buyIn: 100,
+          overallPayouts: [
+            { place: 1, pct: 0.6 },
+            { place: 2, pct: 0.3 },
+            { place: 3, pct: 0.1 },
+          ],
+          quarterPayouts: [
+            { place: 1, pct: 0.6 },
+            { place: 2, pct: 0.3 },
+          ],
+        },
+      ],
+      tournaments: [tournament("t1", 1), tournament("t2", 2), tournament("t3", 3), tournament("t4", 4)],
+      picks: [pick("p1", "t1", "g1"), pick("p2", "t1", "g2"), pick("p3", "t1", "g3")],
+      results: [],
+    });
+    const report = buildSeasonReport(data, data.seasons[0]!);
+    expect(report.payouts.overall).toEqual([]);
+    expect(report.payouts.quarters[1]).toEqual([]);
+  });
 });

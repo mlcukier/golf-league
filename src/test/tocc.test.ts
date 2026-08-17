@@ -41,7 +41,7 @@ describe("computeTOCCWeek", () => {
     ]);
   });
 
-  it("splits the stake evenly across tied 1st-place winners", () => {
+  it("a tie for 1st counts for 1st AND 2nd — no separate 2nd-place break-even, and everyone else pays", () => {
     const results = [
       result("t1", "g1", 900, 2),
       result("t1", "g2", 900, 2),
@@ -50,10 +50,36 @@ describe("computeTOCCWeek", () => {
     ];
     const week = computeTOCCWeek("t1", members, picks, results);
     expect(week.winners.sort()).toEqual(["p1", "p2"]);
-    expect(week.secondPlace).toEqual(["p3"]);
-    expect(week.payments).toEqual([
+    // The tie for 1st occupies places 1 and 2, so p3 (really 3rd) is not exempt as "2nd place" — it pays.
+    expect(week.secondPlace).toEqual([]);
+    expect(week.payments.sort((a, b) => a.from.localeCompare(b.from) || a.to.localeCompare(b.to))).toEqual([
+      { from: "p3", to: "p1", amount: 50 },
+      { from: "p3", to: "p2", amount: 50 },
       { from: "p4", to: "p1", amount: 50 },
       { from: "p4", to: "p2", amount: 50 },
+    ]);
+  });
+
+  it("a 3-way tie for 1st consumes places 1-3, so the next entrant (really 4th) pays", () => {
+    const fivePicks = [...picks, pick("p5", "t1", "g5")];
+    const results = [
+      result("t1", "g1", 900, 2),
+      result("t1", "g2", 900, 2),
+      result("t1", "g3", 900, 2),
+      result("t1", "g4", 100, 20),
+      result("t1", "g5", 0, null),
+    ];
+    const week = computeTOCCWeek("t1", [...members, "p5"], fivePicks, results);
+    expect(week.winners.sort()).toEqual(["p1", "p2", "p3"]);
+    expect(week.secondPlace).toEqual([]);
+    // Nobody's left to be "2nd place" — p4 and p5 (really 4th/5th) both pay.
+    expect(week.payments.sort((a, b) => a.from.localeCompare(b.from) || a.to.localeCompare(b.to))).toEqual([
+      { from: "p4", to: "p1", amount: 100 / 3 },
+      { from: "p4", to: "p2", amount: 100 / 3 },
+      { from: "p4", to: "p3", amount: 100 / 3 },
+      { from: "p5", to: "p1", amount: 100 / 3 },
+      { from: "p5", to: "p2", amount: 100 / 3 },
+      { from: "p5", to: "p3", amount: 100 / 3 },
     ]);
   });
 

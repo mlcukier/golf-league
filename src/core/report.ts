@@ -22,7 +22,7 @@ import {
   toccMemberIds,
   type LeagueData,
 } from "../store/store.js";
-import type { Season } from "../types.js";
+import type { QuarterBoundary, Season } from "../types.js";
 
 export interface SeasonReport {
   season: Season;
@@ -49,6 +49,8 @@ export interface SeasonReport {
     /** Quarter number (1-4) -> that quarter's payouts, same schedule applied independently to each. */
     quarters: Record<number, PayoutRow[]>;
   };
+  /** Empty until the season has >= 4 tournaments (buildEqualQuarterBoundaries needs that many to split). */
+  quarterBoundaries: QuarterBoundary[];
   nameByParticipantId: Map<string, string>;
 }
 
@@ -111,10 +113,27 @@ export function buildSeasonReport(data: LeagueData, season: Season): SeasonRepor
   const seasonStandings = computeSeasonStandings(picks, results);
   const quarterStandings = computeQuarterlyStandings(picks, results, tournaments, boundaries);
   const totalPot = season.buyIn * roster.length;
+
+  // Don't distribute a place's money until there's at least one real result
+  // to base it on — otherwise the whole roster ties at $0 and reads as one
+  // giant tie group, which (correctly, by the tie convention) splits every
+  // paid place evenly across literally everyone, including people who
+  // aren't really "in the top N" at all. That's technically consistent but
+  // meaningless before anything's actually been decided.
   const quarterPayouts: Record<number, PayoutRow[]> = {};
   for (const q of Object.keys(quarterStandings)) {
-    quarterPayouts[Number(q)] = distributePlacePayouts(quarterStandings[Number(q)]!, season.quarterPayouts, totalPot);
+    const qNum = Number(q);
+    const boundary = boundaries.find((b) => b.quarter === qNum);
+    const quarterHasResults =
+      boundary != null &&
+      tournaments.some(
+        (t) => t.sequence >= boundary.firstSequence && t.sequence <= boundary.lastSequence && playedTournamentIds.includes(t.id)
+      );
+    quarterPayouts[qNum] = quarterHasResults
+      ? distributePlacePayouts(quarterStandings[qNum]!, season.quarterPayouts, totalPot)
+      : [];
   }
+  const seasonHasResults = playedTournamentIds.length > 0;
 
   return {
     season,
@@ -132,9 +151,10 @@ export function buildSeasonReport(data: LeagueData, season: Season): SeasonRepor
     tocc: { weeks: toccWeeks, netByParticipant },
     payouts: {
       totalPot,
-      overall: distributePlacePayouts(seasonStandings, season.overallPayouts, totalPot),
+      overall: seasonHasResults ? distributePlacePayouts(seasonStandings, season.overallPayouts, totalPot) : [],
       quarters: quarterPayouts,
     },
+    quarterBoundaries: boundaries,
     nameByParticipantId: new Map(data.participants.map((p) => [p.id, p.nickname || p.name])),
   };
 }

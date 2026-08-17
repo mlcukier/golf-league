@@ -45,9 +45,15 @@ export interface TOCCWeekResult {
  * (a $0 week can't beat anyone who made the cut) unless the whole subgroup
  * is at $0, in which case everyone ties for 1st and no money moves.
  *
- * Tie handling (not specified by the league rules as given): a tie for 1st
- * splits the collected stake evenly across the tied winners; a tie for 2nd
- * means everyone in that tie breaks even.
+ * Tie handling: places are consumed by tie-group size, same convention a
+ * real golf leaderboard uses — a group tied on earnings occupies as many
+ * consecutive places as its size (a 2-way tie for 1st occupies places 1
+ * AND 2). So a tie for 1st "counts for 1st and 2nd": the tied golfers split
+ * the winnings, and there is no separate 2nd-place break-even that week —
+ * whoever has the next-best earnings is really in 3rd (or later) and pays
+ * like anyone else outside the tie. The 2nd-place break-even only exists
+ * when place 2 isn't already claimed by the 1st-place group, i.e. exactly
+ * one participant is alone in 1st.
  */
 export function computeTOCCWeek(
   tournamentId: string,
@@ -73,15 +79,27 @@ export function computeTOCCWeek(
     return { tournamentId, rankings: [], winners: [], secondPlace: [], payments: [] };
   }
 
-  const distinctEarnings = [...new Set(rankings.map((r) => r.earnings))];
-  const winners = rankings.filter((r) => r.earnings === distinctEarnings[0]).map((r) => r.participantId);
-  const secondPlace =
-    distinctEarnings.length > 1
-      ? rankings.filter((r) => r.earnings === distinctEarnings[1]).map((r) => r.participantId)
-      : [];
+  // Group consecutive ties, tracking which 1-based place range each group occupies.
+  const groups: { rows: TOCCRankingRow[]; startPlace: number; endPlace: number }[] = [];
+  let place = 1;
+  for (let i = 0; i < rankings.length; ) {
+    let j = i;
+    while (j + 1 < rankings.length && rankings[j + 1]!.earnings === rankings[i]!.earnings) j++;
+    const rows = rankings.slice(i, j + 1);
+    groups.push({ rows, startPlace: place, endPlace: place + rows.length - 1 });
+    place += rows.length;
+    i = j + 1;
+  }
 
-  const winningGolferId = rankings[0]!.golferId;
-  const wonRealTournament = winningGolferId ? (resultByGolfer.get(winningGolferId)?.isWin ?? false) : false;
+  const winnerGroup = groups[0]!;
+  const winners = winnerGroup.rows.map((r) => r.participantId);
+  // Only a solo 1st place leaves place 2 open for a separate break-even group.
+  const secondGroup = winnerGroup.endPlace === 1 && groups[1]?.startPlace === 2 ? groups[1] : undefined;
+  const secondPlace = secondGroup ? secondGroup.rows.map((r) => r.participantId) : [];
+
+  const wonRealTournament = winnerGroup.rows.some(
+    (r) => r.golferId !== null && (resultByGolfer.get(r.golferId)?.isWin ?? false)
+  );
   const stake = wonRealTournament ? stakes.stakeIfWinner : stakes.stake;
 
   const payers = rankings

@@ -559,6 +559,13 @@ async function renderHearn(el) {
 }
 
 function renderSchedule(el) {
+  // Quarters 1-3's last tournament gets a "last of QN" pill; quarter 4's last
+  // is always the finale already, which has its own obvious pill.
+  const lastOfQuarter = {};
+  (REPORT.quarterBoundaries || []).forEach((b) => {
+    if (b.quarter < 4) lastOfQuarter[b.lastSequence] = b.quarter;
+  });
+
   el.innerHTML =
     '<div class="card"><h2>Add tournament</h2><div class="row">' +
       '<input id="tName" placeholder="Tournament name">' +
@@ -569,7 +576,9 @@ function renderSchedule(el) {
     '<div class="card"><h2>Schedule (' + REPORT.tournaments.length + ')</h2><table>' +
       '<tr><th>#</th><th>Tournament</th><th>Starts / deadline</th><th>Field</th></tr>' +
       REPORT.tournaments.map((t) => '<tr><td>' + t.sequence + '</td><td>' + esc(t.name) +
-        (t.isSeasonFinale ? ' <span class="pill">finale</span>' : '') + '</td><td>' +
+        (t.isSeasonFinale ? ' <span class="pill">finale</span>' : '') +
+        (lastOfQuarter[t.sequence] ? ' <span class="pill">last of Q' + lastOfQuarter[t.sequence] + '</span>' : '') +
+        '</td><td>' +
         new Date(t.startTime).toLocaleString() + '</td><td><button class="act ghost" data-fld="' + t.id +
         '">Set field</button></td></tr>').join('') + '</table></div>' +
     '<div class="card" id="fldBox" style="display:none"><h2>Field for <span id="fldName"></span></h2>' +
