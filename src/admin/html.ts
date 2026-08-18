@@ -59,6 +59,8 @@ export const ADMIN_HTML = /* html */ `<!doctype html>
   .tbox-name { font-weight:700; font-size:16px; }
   .tbox-body { display:none; padding:0 12px 12px; border-top:1px solid var(--line); }
   .tbox.open .tbox-body { display:block; }
+  .sortbtn { padding:4px 10px; font-size:12px; }
+  .sortbtn.on { background:var(--accent); border-color:var(--accent); color:#08150d; }
   .authWrap { max-width:360px; margin:60px auto; padding:0 16px; }
   .authWrap input { width:100%; }
 </style>
@@ -425,7 +427,7 @@ function availabilityLineHtml(label, a) {
 
 function golferBoxHtml(g, isCurrent, currentQuarter) {
   const isUsed = Boolean(g.usedInTournament);
-  return '<div class="gbox' + (isCurrent ? ' current' : '') + '" data-gname="' + esc(g.name) + '">' +
+  return '<div class="gbox' + (isCurrent ? ' current' : '') + '" data-gname="' + esc(g.name) + '" data-sort-name="' + esc(g.name) + '" data-sort-odds="' + (g.odds == null ? '' : g.odds) + '">' +
     '<div class="gbox-head" data-toggle="' + esc(g.name) + '">' +
       '<span class="gbox-name"' + (isUsed ? ' style="text-decoration:line-through;color:var(--muted)"' : '') + '>' + esc(g.name) + '</span>' +
       '<span class="muted">' + esc(oddsLabel(g.odds)) + '</span>' +
@@ -449,7 +451,9 @@ function golferBoxHtml(g, isCurrent, currentQuarter) {
 
 function tournamentBoxHtml(t) {
   const pill = t.quarterPill ? '<span class="pill">' + esc(t.quarterPill) + '</span>' : '';
-  const pickNote = t.existingPickGolferName ? ' · Current pick: <strong>' + esc(t.existingPickGolferName) + '</strong>' : '';
+  const pickNote = t.existingPickGolferName
+    ? ' · Current pick: <strong>' + esc(t.existingPickGolferName) + '</strong>'
+    : (t.hasField ? ' · <span class="pill" style="color:var(--warn);border-color:var(--warn)">No pick — due ' + new Date(t.startTime).toLocaleString() + '</span>' : '');
   const head =
     '<div class="tbox-head' + (t.hasField ? '' : ' disabled') + '"' + (t.hasField ? ' data-ttoggle="' + esc(t.id) + '"' : '') + '>' +
       '<span class="tbox-name">' + esc(t.name) + '</span>' + pill +
@@ -458,8 +462,28 @@ function tournamentBoxHtml(t) {
   if (!t.hasField) {
     return '<div class="tbox">' + head + '<p class="muted" style="padding:6px 14px 14px">Field not set yet — check back closer to the tournament.</p></div>';
   }
+  const sortBar =
+    '<div class="row" style="padding:12px 14px 0"><span class="muted" style="font-size:12px">Sort:</span>' +
+      '<button class="act ghost sortbtn on" data-sort="name">A–Z</button>' +
+      '<button class="act ghost sortbtn" data-sort="odds">Odds</button>' +
+    '</div>';
   const body = t.field.map((g) => golferBoxHtml(g, g.name === t.existingPickGolferName, t.quarterNumber)).join('');
-  return '<div class="tbox" data-tid="' + esc(t.id) + '">' + head + '<div class="tbox-body">' + body + '</div></div>';
+  return '<div class="tbox" data-tid="' + esc(t.id) + '">' + head + '<div class="tbox-body">' + sortBar + '<div class="field-list">' + body + '</div></div></div>';
+}
+
+function sortFieldList(container, mode) {
+  const nodes = Array.from(container.children);
+  nodes.sort((a, b) => {
+    if (mode === 'odds') {
+      const ao = a.dataset.sortOdds, bo = b.dataset.sortOdds;
+      if (ao === '' && bo === '') return a.dataset.sortName.localeCompare(b.dataset.sortName);
+      if (ao === '') return 1;
+      if (bo === '') return -1;
+      return Number(ao) - Number(bo);
+    }
+    return a.dataset.sortName.localeCompare(b.dataset.sortName);
+  });
+  nodes.forEach((n) => container.appendChild(n));
 }
 
 function renderMyPicksTab(el) {
@@ -476,15 +500,20 @@ function renderMyPicksTab(el) {
 
   el.innerHTML = tournaments.map((t, i) => tournamentBoxHtml(t)).join('');
 
-  // Open the first (current) tournament's box by default.
-  const firstBox = el.querySelector('.tbox');
-  if (firstBox && firstBox.querySelector('[data-ttoggle]')) firstBox.classList.add('open');
-
   el.querySelectorAll('[data-ttoggle]').forEach((head) => {
     head.onclick = () => head.closest('.tbox').classList.toggle('open');
   });
   el.querySelectorAll('[data-toggle]').forEach((head) => {
     head.onclick = (e) => { e.stopPropagation(); head.closest('.gbox').classList.toggle('open'); };
+  });
+  el.querySelectorAll('.sortbtn').forEach((btn) => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      const bar = btn.closest('.row');
+      bar.querySelectorAll('.sortbtn').forEach((b) => b.classList.remove('on'));
+      btn.classList.add('on');
+      sortFieldList(bar.nextElementSibling, btn.dataset.sort);
+    };
   });
   el.querySelectorAll('[data-choose]').forEach((btn) => {
     btn.onclick = async (e) => {
