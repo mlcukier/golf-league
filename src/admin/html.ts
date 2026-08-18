@@ -52,6 +52,13 @@ export const ADMIN_HTML = /* html */ `<!doctype html>
   .gbox.open .gbox-body { display:block; }
   .gbox h4 { font-size:12px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); margin:14px 0 6px; font-weight:600; }
   .gbox-avail { font-size:13px; margin:3px 0; }
+  .tbox { background:var(--panel); border:1px solid var(--line); border-radius:10px; margin-bottom:12px; overflow:hidden; }
+  .tbox-head { padding:14px 16px; cursor:pointer; display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .tbox-head.disabled { cursor:default; }
+  .tbox-head:not(.disabled):hover { background:#101713; }
+  .tbox-name { font-weight:700; font-size:16px; }
+  .tbox-body { display:none; padding:0 12px 12px; border-top:1px solid var(--line); }
+  .tbox.open .tbox-body { display:block; }
   .authWrap { max-width:360px; margin:60px auto; padding:0 16px; }
   .authWrap input { width:100%; }
 </style>
@@ -99,8 +106,8 @@ export const ADMIN_HTML = /* html */ `<!doctype html>
     <button class="act" id="pwGo">Save</button>
   </span>
   <nav>
-    <button data-tab="mypicks" class="on">My Picks</button>
-    <button data-tab="standings">Standings</button>
+    <button data-tab="standings" class="on">Standings</button>
+    <button data-tab="mypicks">My Picks</button>
     <button data-tab="myhearn">Hearn Picks</button>
     <button data-tab="picks" data-admin>Picks</button>
     <button data-tab="hearn" data-admin>Hearn Lists</button>
@@ -112,8 +119,8 @@ export const ADMIN_HTML = /* html */ `<!doctype html>
   <button class="act ghost" id="logoutBtn" style="margin-left:auto">Log out</button>
 </header>
 <main>
-  <section id="mypicks" class="on"></section>
-  <section id="standings"></section>
+  <section id="standings" class="on"></section>
+  <section id="mypicks"></section>
   <section id="myhearn"></section>
   <section id="picks"></section>
   <section id="hearn"></section>
@@ -440,33 +447,51 @@ function golferBoxHtml(g, isCurrent, currentQuarter) {
   '</div>';
 }
 
+function tournamentBoxHtml(t) {
+  const pill = t.quarterPill ? '<span class="pill">' + esc(t.quarterPill) + '</span>' : '';
+  const pickNote = t.existingPickGolferName ? ' · Current pick: <strong>' + esc(t.existingPickGolferName) + '</strong>' : '';
+  const head =
+    '<div class="tbox-head' + (t.hasField ? '' : ' disabled') + '"' + (t.hasField ? ' data-ttoggle="' + esc(t.id) + '"' : '') + '>' +
+      '<span class="tbox-name">' + esc(t.name) + '</span>' + pill +
+      '<span class="muted" style="margin-left:auto">' + new Date(t.startTime).toLocaleDateString() + pickNote + '</span>' +
+    '</div>';
+  if (!t.hasField) {
+    return '<div class="tbox">' + head + '<p class="muted" style="padding:6px 14px 14px">Field not set yet — check back closer to the tournament.</p></div>';
+  }
+  const body = t.field.map((g) => golferBoxHtml(g, g.name === t.existingPickGolferName, t.quarterNumber)).join('');
+  return '<div class="tbox" data-tid="' + esc(t.id) + '">' + head + '<div class="tbox-body">' + body + '</div></div>';
+}
+
 function renderMyPicksTab(el) {
   if (!MY.season) {
     el.innerHTML = '<div class="card"><p class="muted">' + esc(MY.failureMessage || 'No active season.') + '</p></div>';
     return;
   }
 
-  const pt = MY.pickTarget;
-  if (!pt) {
-    el.innerHTML = '<div class="card"><p class="muted">No upcoming tournament open for picks right now.</p></div>';
+  const tournaments = MY.upcomingTournaments || [];
+  if (!tournaments.length) {
+    el.innerHTML = '<div class="card"><p class="muted">No upcoming tournaments to pick right now.</p></div>';
     return;
   }
 
-  const existingName = MY.existingPick ? MY.existingPick.golferName : null;
-  el.innerHTML =
-    '<div class="card"><h2>' + esc(pt.name) + '</h2>' +
-      '<p class="muted">Deadline: ' + new Date(pt.startTime).toLocaleString() +
-      (existingName ? ' · Current pick: <strong>' + esc(existingName) + '</strong>' : '') + '</p>' +
-    '</div>' +
-    pt.field.map((g) => golferBoxHtml(g, g.name === existingName, pt.currentQuarter)).join('');
+  el.innerHTML = tournaments.map((t, i) => tournamentBoxHtml(t)).join('');
 
+  // Open the first (current) tournament's box by default.
+  const firstBox = el.querySelector('.tbox');
+  if (firstBox && firstBox.querySelector('[data-ttoggle]')) firstBox.classList.add('open');
+
+  el.querySelectorAll('[data-ttoggle]').forEach((head) => {
+    head.onclick = () => head.closest('.tbox').classList.toggle('open');
+  });
   el.querySelectorAll('[data-toggle]').forEach((head) => {
-    head.onclick = () => head.closest('.gbox').classList.toggle('open');
+    head.onclick = (e) => { e.stopPropagation(); head.closest('.gbox').classList.toggle('open'); };
   });
   el.querySelectorAll('[data-choose]').forEach((btn) => {
-    btn.onclick = async () => {
+    btn.onclick = async (e) => {
+      e.stopPropagation();
+      const tournamentId = btn.closest('.tbox').dataset.tid;
       try {
-        const r = await api('/api/my/pick', 'POST', { tournamentId: pt.id, golferName: btn.dataset.choose });
+        const r = await api('/api/my/pick', 'POST', { tournamentId, golferName: btn.dataset.choose });
         toast(r.message, !r.ok);
         if (r.ok) { await loadMyState(); render(); }
       } catch (e) { toast(e.message, true); }
@@ -484,7 +509,7 @@ function renderMyHearnTab(el) {
   // Tour roster (via hearnPool from the server), plus anything already on
   // the list, so a golfer never silently drops off just because they're not
   // in this week's field.
-  const pool = MY.hearnPool && MY.hearnPool.length ? MY.hearnPool : (MY.pickTarget ? MY.pickTarget.field : []);
+  const pool = MY.hearnPool && MY.hearnPool.length ? MY.hearnPool : ((MY.upcomingTournaments && MY.upcomingTournaments[0]) ? MY.upcomingTournaments[0].field : []);
   const hearnExtras = MY.hearnList.map((h) => h.golferName);
   const hearnSlotCount = Math.max(MY.hearnList.length + 3, 6);
   const hearnRows = Array.from({ length: hearnSlotCount }, (_, i) => {

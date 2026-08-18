@@ -149,9 +149,13 @@ export interface GolferFormCacheOptions {
 /**
  * This is a ~20-request crawl, not a cheap call — cache it per tournament
  * (keyed by event id) with a long TTL, since recent-form/course-history data
- * only meaningfully changes once a week when the field turns over. Falls
- * back to the last good result for the SAME event id on a fetch error,
- * same tolerance pattern as the odds/player-list caches.
+ * only meaningfully changes once a week when the field turns over. Holds one
+ * entry per event id simultaneously (not just the last one requested) —
+ * the pick page shows the current tournament plus however many near-future
+ * ones have a field set, so several distinct event ids are legitimately
+ * "current" within the same TTL window. Falls back to the last good result
+ * for that SAME event id on a fetch error, same tolerance pattern as the
+ * odds/player-list caches.
  */
 export function createGolferFormCache(apiKey: string, options: GolferFormCacheOptions = {}): GolferFormCache {
   const tour = options.tour ?? "pga";
@@ -159,21 +163,22 @@ export function createGolferFormCache(apiKey: string, options: GolferFormCacheOp
   const fetchImpl = options.fetchImpl ?? fetch;
   const now = options.now ?? (() => Date.now());
 
-  let cached: { eventId: number; fetchedAt: number; data: GolferFormData } | null = null;
+  const cache = new Map<number, { fetchedAt: number; data: GolferFormData }>();
 
   return {
     async get(currentEventId: number) {
-      if (cached && cached.eventId === currentEventId && now() - cached.fetchedAt < ttlMs) return cached.data;
+      const existing = cache.get(currentEventId);
+      if (existing && now() - existing.fetchedAt < ttlMs) return existing.data;
       try {
         // Deliberately real wall-clock time here, not the (possibly mocked,
         // for TTL testing) now() above — "which events are completed" needs
         // the actual current date regardless of how cache freshness is measured.
         const data = await fetchGolferFormData(apiKey, tour, currentEventId, new Date(), fetchImpl);
-        cached = { eventId: currentEventId, fetchedAt: now(), data };
+        cache.set(currentEventId, { fetchedAt: now(), data });
         return data;
       } catch (err) {
         console.error("DataGolf golfer-form crawl failed:", err);
-        return cached && cached.eventId === currentEventId ? cached.data : null;
+        return existing?.data ?? null;
       }
     },
   };

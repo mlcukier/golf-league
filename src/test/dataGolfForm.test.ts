@@ -85,7 +85,7 @@ describe("createGolferFormCache", () => {
     expect((fetchImpl as ReturnType<typeof vi.fn>)).toHaveBeenCalledTimes(4);
   });
 
-  it("refetches when a different event id is requested", async () => {
+  it("fetches fresh data for a different event id", async () => {
     let t = 0;
     const fetchImpl = fakeFetchImpl();
     const cache = createGolferFormCache("key", { fetchImpl, now: () => t, ttlMs: 100000 });
@@ -93,6 +93,19 @@ describe("createGolferFormCache", () => {
     const firstCallCount = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls.length;
     await cache.get(13);
     expect((fetchImpl as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(firstCallCount);
+  });
+
+  it("keeps multiple event ids cached simultaneously — one doesn't evict another", async () => {
+    let t = 0;
+    const fetchImpl = fakeFetchImpl();
+    const cache = createGolferFormCache("key", { fetchImpl, now: () => t, ttlMs: 100000 });
+    await cache.get(28);
+    await cache.get(13);
+    const afterBoth = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls.length;
+    t = 500; // still within TTL
+    await cache.get(28); // must NOT refetch — 13 shouldn't have evicted it
+    await cache.get(13); // must NOT refetch either
+    expect((fetchImpl as ReturnType<typeof vi.fn>).mock.calls.length).toBe(afterBoth);
   });
 
   it("falls back to the last good result for the same event id on a fetch error", async () => {

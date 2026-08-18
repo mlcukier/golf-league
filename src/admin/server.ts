@@ -298,95 +298,112 @@ const routes: Route[] = [
       const pickTarget = openTournament(data, season.id);
       const golferName = (id: string) => data.golfers.find((g) => g.id === id)?.name ?? id;
       const seasonPicksList = seasonPicks(data, season.id);
-      const existingPick = pickTarget
-        ? seasonPicksList.find((p) => p.participantId === me!.id && p.tournamentId === pickTarget.id)
-        : undefined;
-
-      const odds = pickTarget && oddsCache ? oddsForTournament(await oddsCache.get(), pickTarget.name) : null;
-
-      // Three cohorts for "opponent availability": the whole roster, whoever
-      // currently has more season earnings than me, and whoever currently
-      // has more THIS QUARTER's earnings than me. computeSeasonStandings
-      // only lists participants with at least one pick, so a participant
-      // (including me) with none yet is implicitly at $0 for comparison.
       const rosterIds = seasonRoster(data, season.id).map((p) => p.id);
-      const myOverallEarnings = report.seasonStandings.find((r) => r.participantId === me!.id)?.totalEarnings ?? 0;
-      const aheadOverallIds = report.seasonStandings
-        .filter((r) => r.totalEarnings > myOverallEarnings)
-        .map((r) => r.participantId);
-      const currentQuarter = pickTarget
-        ? report.quarterBoundaries.find((b) => pickTarget.sequence >= b.firstSequence && pickTarget.sequence <= b.lastSequence)
-        : undefined;
-      const quarterStandings = currentQuarter ? report.quarterStandings[currentQuarter.quarter] ?? [] : [];
-      const myQuarterEarnings = quarterStandings.find((r) => r.participantId === me!.id)?.totalEarnings ?? 0;
-      const aheadQuarterIds = quarterStandings.filter((r) => r.totalEarnings > myQuarterEarnings).map((r) => r.participantId);
-
-      const rosterAvailability = pickTarget ? computeGolferAvailability(seasonPicksList, rosterIds, pickTarget.id) : new Map();
-      const aheadOverallAvailability = pickTarget
-        ? computeGolferAvailability(seasonPicksList, aheadOverallIds, pickTarget.id)
-        : new Map();
-      const aheadQuarterAvailability =
-        pickTarget && currentQuarter ? computeGolferAvailability(seasonPicksList, aheadQuarterIds, pickTarget.id) : new Map();
 
       // Already used this season -> which tournament, so the pick page can
-      // say where (excluding this week's own pick, which is the current
-      // selection, not a blocked one). One-and-done guarantees at most one
-      // prior tournament per golfer per participant.
+      // say where (a tournament being previewed here doesn't count as
+      // "used" for itself — if you already have a pick there, that's your
+      // current selection, not a blocked one). One-and-done guarantees at
+      // most one prior tournament per golfer per participant.
       const usedInTournamentByGolfer = new Map<string, string>();
       for (const p of data.picks) {
         if (p.participantId !== me!.id || p.seasonId !== season.id) continue;
-        if (pickTarget && p.tournamentId === pickTarget.id) continue;
         const tournamentName = data.tournaments.find((t) => t.id === p.tournamentId)?.name ?? p.tournamentId;
         usedInTournamentByGolfer.set(p.golferId, tournamentName);
       }
 
-      const form =
-        pickTarget?.externalEventId && golferFormCache ? await golferFormCache.get(Number(pickTarget.externalEventId)) : null;
+      const myOverallEarnings = report.seasonStandings.find((r) => r.participantId === me!.id)?.totalEarnings ?? 0;
+      const aheadOverallIds = report.seasonStandings
+        .filter((r) => r.totalEarnings > myOverallEarnings)
+        .map((r) => r.participantId);
+
+      const quarterPillFor = (t: (typeof data.tournaments)[number]) => {
+        if (t.isSeasonFinale) return "finale";
+        const b = report.quarterBoundaries.find((b) => b.quarter < 4 && b.lastSequence === t.sequence);
+        return b ? `last of Q${b.quarter}` : null;
+      };
+
+      // Every tournament from the currently-open one onward — the pick page
+      // shows this week plus however many near-future weeks already have a
+      // field set (DataGolf/admin hasn't confirmed fields further out, so
+      // there'd be nothing to show or pick from). Past tournaments are never
+      // included here; that history lives on the Standings tab/Schedule.
+      const upcoming = pickTarget ? data.tournaments.filter((t) => t.seasonId === season.id && t.sequence >= pickTarget.sequence).sort((a, b) => a.sequence - b.sequence) : [];
+
+      const upcomingTournaments = [];
+      for (const t of upcoming) {
+        const fieldIds = [...tournamentField(data, t.id)];
+        const existingPick = seasonPicksList.find((p) => p.participantId === me!.id && p.tournamentId === t.id);
+        const thisQuarter = report.quarterBoundaries.find((b) => t.sequence >= b.firstSequence && t.sequence <= b.lastSequence);
+        const base = {
+          id: t.id,
+          name: t.name,
+          startTime: t.startTime,
+          sequence: t.sequence,
+          isSeasonFinale: t.isSeasonFinale,
+          quarterPill: quarterPillFor(t),
+          quarterNumber: thisQuarter?.quarter ?? null,
+          hasField: fieldIds.length > 0,
+          existingPickGolferName: existingPick ? golferName(existingPick.golferId) : null,
+          field: [] as unknown[],
+        };
+        if (fieldIds.length === 0) {
+          upcomingTournaments.push(base);
+          continue;
+        }
+
+        const odds = oddsCache ? oddsForTournament(await oddsCache.get(), t.name) : null;
+
+        const quarterStandings = thisQuarter ? report.quarterStandings[thisQuarter.quarter] ?? [] : [];
+        const myQuarterEarnings = quarterStandings.find((r) => r.participantId === me!.id)?.totalEarnings ?? 0;
+        const aheadQuarterIds = quarterStandings.filter((r) => r.totalEarnings > myQuarterEarnings).map((r) => r.participantId);
+
+        const rosterAvailability = computeGolferAvailability(seasonPicksList, rosterIds, t.id);
+        const aheadOverallAvailability = computeGolferAvailability(seasonPicksList, aheadOverallIds, t.id);
+        const aheadQuarterAvailability = thisQuarter ? computeGolferAvailability(seasonPicksList, aheadQuarterIds, t.id) : new Map();
+
+        const form = t.externalEventId && golferFormCache ? await golferFormCache.get(Number(t.externalEventId)) : null;
+
+        base.field = fieldIds
+          .map((id) => {
+            const name = golferName(id);
+            return {
+              name,
+              odds: odds?.get(name) ?? null,
+              usedInTournament: usedInTournamentByGolfer.get(id) ?? null,
+              availability: getAvailability(rosterAvailability, id, rosterIds.length),
+              aheadOverallAvailability: getAvailability(aheadOverallAvailability, id, aheadOverallIds.length),
+              aheadQuarterAvailability: thisQuarter ? getAvailability(aheadQuarterAvailability, id, aheadQuarterIds.length) : null,
+              recentStarts: form?.recentStarts.get(name) ?? [],
+              courseHistory: form?.courseHistory.get(name) ?? [],
+            };
+          })
+          .sort((a, b) => a.name.localeCompare(b.name));
+        upcomingTournaments.push(base);
+      }
 
       // The Hearn list is a season-long fallback, not scoped to one week —
       // its picker draws from the whole PGA Tour roster, not just whoever's
       // in this week's field. Always includes this week's field too, in
       // case someone's playing but not yet in the ranked player list (e.g.
       // a Monday qualifier).
+      const currentOdds = pickTarget && oddsCache ? oddsForTournament(await oddsCache.get(), pickTarget.name) : null;
       const pgaTourPlayers = playerListCache ? await playerListCache.get() : null;
       const hearnPool = new Map<string, number | null>();
-      for (const p of pgaTourPlayers ?? []) hearnPool.set(p.name, odds?.get(p.name) ?? null);
+      for (const p of pgaTourPlayers ?? []) hearnPool.set(p.name, currentOdds?.get(p.name) ?? null);
       if (pickTarget) {
         for (const id of tournamentField(data, pickTarget.id)) {
           const name = golferName(id);
-          if (!hearnPool.has(name)) hearnPool.set(name, odds?.get(name) ?? null);
+          if (!hearnPool.has(name)) hearnPool.set(name, currentOdds?.get(name) ?? null);
         }
       }
 
       return {
         season,
-        pickTarget: pickTarget
-          ? {
-              ...pickTarget,
-              currentQuarter: currentQuarter?.quarter ?? null,
-              field: [...tournamentField(data, pickTarget.id)]
-                .map((id) => {
-                  const name = golferName(id);
-                  return {
-                    name,
-                    odds: odds?.get(name) ?? null,
-                    usedInTournament: usedInTournamentByGolfer.get(id) ?? null,
-                    availability: getAvailability(rosterAvailability, id, rosterIds.length),
-                    aheadOverallAvailability: getAvailability(aheadOverallAvailability, id, aheadOverallIds.length),
-                    aheadQuarterAvailability: currentQuarter
-                      ? getAvailability(aheadQuarterAvailability, id, aheadQuarterIds.length)
-                      : null,
-                    recentStarts: form?.recentStarts.get(name) ?? [],
-                    courseHistory: form?.courseHistory.get(name) ?? [],
-                  };
-                })
-                .sort((a, b) => a.name.localeCompare(b.name)),
-            }
-          : null,
+        upcomingTournaments,
         hearnPool: [...hearnPool.entries()]
           .map(([name, oddsValue]) => ({ name, odds: oddsValue }))
           .sort((a, b) => a.name.localeCompare(b.name)),
-        existingPick: existingPick ? { golferName: golferName(existingPick.golferId) } : null,
         myPicks: seasonPicks(data, season.id)
           .filter((p) => p.participantId === me!.id)
           .map((p) => ({
