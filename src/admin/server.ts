@@ -308,8 +308,7 @@ const routes: Route[] = [
       const usedInTournamentByGolfer = new Map<string, string>();
       for (const p of data.picks) {
         if (p.participantId !== me!.id || p.seasonId !== season.id) continue;
-        const tournamentName = data.tournaments.find((t) => t.id === p.tournamentId)?.name ?? p.tournamentId;
-        usedInTournamentByGolfer.set(p.golferId, tournamentName);
+        usedInTournamentByGolfer.set(p.golferId, p.tournamentId);
       }
 
       const myOverallEarnings = report.seasonStandings.find((r) => r.participantId === me!.id)?.totalEarnings ?? 0;
@@ -367,10 +366,15 @@ const routes: Route[] = [
         base.field = fieldIds
           .map((id) => {
             const name = golferName(id);
+            const usedTournamentId = usedInTournamentByGolfer.get(id);
+            const usedInTournament =
+              usedTournamentId && usedTournamentId !== t.id
+                ? data.tournaments.find((tt) => tt.id === usedTournamentId)?.name ?? usedTournamentId
+                : null;
             return {
               name,
               odds: odds?.get(name) ?? null,
-              usedInTournament: usedInTournamentByGolfer.get(id) ?? null,
+              usedInTournament,
               availability: getAvailability(rosterAvailability, id, rosterIds.length),
               aheadOverallAvailability: getAvailability(aheadOverallAvailability, id, aheadOverallIds.length),
               aheadQuarterAvailability: thisQuarter ? getAvailability(aheadQuarterAvailability, id, aheadQuarterIds.length) : null,

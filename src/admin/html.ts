@@ -464,10 +464,16 @@ function tournamentBoxHtml(t) {
   }
   const sortBar =
     '<div class="row" style="padding:12px 14px 0"><span class="muted" style="font-size:12px">Sort:</span>' +
-      '<button class="act ghost sortbtn on" data-sort="name">A–Z</button>' +
-      '<button class="act ghost sortbtn" data-sort="odds">Odds</button>' +
+      '<button class="act ghost sortbtn" data-sort="name">A–Z</button>' +
+      '<button class="act ghost sortbtn on" data-sort="odds">Odds</button>' +
     '</div>';
-  const body = t.field.map((g) => golferBoxHtml(g, g.name === t.existingPickGolferName, t.quarterNumber)).join('');
+  const byOdds = t.field.slice().sort((a, b) => {
+    if (a.odds == null && b.odds == null) return a.name.localeCompare(b.name);
+    if (a.odds == null) return 1;
+    if (b.odds == null) return -1;
+    return a.odds - b.odds;
+  });
+  const body = byOdds.map((g) => golferBoxHtml(g, g.name === t.existingPickGolferName, t.quarterNumber)).join('');
   return '<div class="tbox" data-tid="' + esc(t.id) + '">' + head + '<div class="tbox-body">' + sortBar + '<div class="field-list">' + body + '</div></div></div>';
 }
 
