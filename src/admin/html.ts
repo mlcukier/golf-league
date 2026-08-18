@@ -97,16 +97,6 @@ export const ADMIN_HTML = /* html */ `<!doctype html>
 <header>
   <h1>⛳ Golf League</h1>
   <select id="seasonPicker" data-admin></select>
-  <span class="row" style="margin-left:12px">
-    <input id="nickInput" placeholder="Your nickname" style="width:140px">
-    <button class="act ghost" id="nickGo">Save</button>
-  </span>
-  <button class="act ghost" id="pwToggle">Change password</button>
-  <span class="row" id="pwBox" style="display:none">
-    <input id="pwCurrent" type="password" placeholder="Current password" autocomplete="current-password" style="width:150px">
-    <input id="pwNew" type="password" placeholder="New password (min 8 chars)" autocomplete="new-password" style="width:170px">
-    <button class="act" id="pwGo">Save</button>
-  </span>
   <nav>
     <button data-tab="standings" class="on">Standings</button>
     <button data-tab="mypicks">My Picks</button>
@@ -117,8 +107,8 @@ export const ADMIN_HTML = /* html */ `<!doctype html>
     <button data-tab="results" data-admin>Results</button>
     <button data-tab="roster" data-admin>Roster</button>
     <button data-tab="seasons" data-admin>Seasons</button>
+    <button data-tab="settings" style="margin-left:auto">Settings</button>
   </nav>
-  <button class="act ghost" id="logoutBtn" style="margin-left:auto">Log out</button>
 </header>
 <main>
   <section id="standings" class="on"></section>
@@ -130,6 +120,7 @@ export const ADMIN_HTML = /* html */ `<!doctype html>
   <section id="results"></section>
   <section id="roster"></section>
   <section id="seasons"></section>
+  <section id="settings"></section>
 </main>
 </div>
 <div id="toast"></div>
@@ -231,11 +222,6 @@ document.querySelectorAll('nav button').forEach((b) => {
     render();
   };
 });
-$('logoutBtn').onclick = async () => {
-  try { await api('/api/auth/logout', 'POST', {}); } catch { /* ignore */ }
-  location.reload();
-};
-
 async function boot() {
   const setpwToken = new URLSearchParams(location.search).get('setpw');
   if (setpwToken) {
@@ -254,29 +240,6 @@ async function boot() {
 
   showScreen('app');
   document.querySelectorAll('[data-admin]').forEach((el) => { el.style.display = ME.isAdmin ? '' : 'none'; });
-
-  $('nickInput').value = ME.nickname || '';
-  $('nickGo').onclick = async () => {
-    try {
-      ME = { ...ME, ...(await api('/api/my/nickname', 'PUT', { nickname: $('nickInput').value })) };
-      toast('Nickname saved'); await loadMyState(); if (ME.isAdmin) await loadSeason(); render();
-    } catch (e) { toast(e.message, true); }
-  };
-
-  $('pwToggle').onclick = () => {
-    const box = $('pwBox');
-    box.style.display = box.style.display === 'none' ? 'flex' : 'none';
-  };
-  $('pwGo').onclick = async () => {
-    const currentPassword = $('pwCurrent').value;
-    const newPassword = $('pwNew').value;
-    if (newPassword.length < 8) return toast('New password must be at least 8 characters', true);
-    try {
-      await api('/api/my/password', 'PUT', { currentPassword, newPassword });
-      $('pwCurrent').value = ''; $('pwNew').value = ''; $('pwBox').style.display = 'none';
-      toast('Password changed');
-    } catch (e) { toast(e.message, true); }
-  };
 
   await loadMyState();
   if (ME.isAdmin) await bootAdmin();
@@ -320,6 +283,7 @@ function render() {
   if (tab === 'mypicks') return renderMyPicksTab(el);
   if (tab === 'standings') return renderStandingsTab(el);
   if (tab === 'myhearn') return renderMyHearnTab(el);
+  if (tab === 'settings') return renderSettingsTab(el);
   if (!REPORT && tab !== 'seasons') {
     el.innerHTML = '<div class="card"><p class="muted">No season selected. Create one in the Seasons tab.</p></div>';
     return;
@@ -404,6 +368,55 @@ function renderStandingsTab(el) {
       '<div class="card"><h2>Quarter ' + n + '</h2>' + standingsTable(q[n], MY.report, pot.quarters[n]) + '</div>').join('') + '</div>' +
     '<div class="grid2">' + potsCardsHtml(MY.report, MY.season, MY.tournaments, ME.id in MY.report.tocc.netByParticipant) + '</div>' +
     '<div class="card"><h2>Your picks this season</h2>' + picksTable + '</div>';
+}
+
+// ---- Settings (every logged-in participant) --------------------------------
+
+function renderSettingsTab(el) {
+  el.innerHTML =
+    '<div class="card"><h2>Nickname</h2>' +
+      '<p class="muted">Shown to other participants instead of your real name.</p>' +
+      '<div class="row"><input id="nickInput" placeholder="Your nickname" style="width:200px" value="' + esc(ME.nickname || '') + '">' +
+      '<button class="act ghost" id="nickGo">Save</button></div>' +
+    '</div>' +
+    '<div class="card"><h2>Password</h2>' +
+      '<button class="act ghost" id="pwToggle">Change password</button>' +
+      '<div class="row" id="pwBox" style="display:none;margin-top:10px">' +
+        '<input id="pwCurrent" type="password" placeholder="Current password" autocomplete="current-password" style="width:200px">' +
+        '<input id="pwNew" type="password" placeholder="New password (min 8 chars)" autocomplete="new-password" style="width:220px">' +
+        '<button class="act" id="pwGo">Save</button>' +
+      '</div>' +
+    '</div>' +
+    '<div class="card"><h2>Session</h2>' +
+      '<button class="act ghost" id="logoutBtn">Log out</button>' +
+    '</div>';
+
+  $('nickGo').onclick = async () => {
+    try {
+      ME = { ...ME, ...(await api('/api/my/nickname', 'PUT', { nickname: $('nickInput').value })) };
+      toast('Nickname saved'); await loadMyState(); if (ME.isAdmin) await loadSeason(); render();
+    } catch (e) { toast(e.message, true); }
+  };
+
+  $('pwToggle').onclick = () => {
+    const box = $('pwBox');
+    box.style.display = box.style.display === 'none' ? 'flex' : 'none';
+  };
+  $('pwGo').onclick = async () => {
+    const currentPassword = $('pwCurrent').value;
+    const newPassword = $('pwNew').value;
+    if (newPassword.length < 8) return toast('New password must be at least 8 characters', true);
+    try {
+      await api('/api/my/password', 'PUT', { currentPassword, newPassword });
+      $('pwCurrent').value = ''; $('pwNew').value = ''; $('pwBox').style.display = 'none';
+      toast('Password changed');
+    } catch (e) { toast(e.message, true); }
+  };
+
+  $('logoutBtn').onclick = async () => {
+    try { await api('/api/auth/logout', 'POST', {}); } catch { /* ignore */ }
+    location.reload();
+  };
 }
 
 // ---- My Picks (every logged-in participant) — pure picking UI --------------
