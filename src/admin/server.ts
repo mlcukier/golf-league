@@ -8,6 +8,7 @@ import {
   seasonPicks,
   seasonRoster,
   seasonTournaments,
+  toccMemberIds,
   tournamentField,
   upsertGolfer,
   type LeagueData,
@@ -18,6 +19,7 @@ import { blockingReasons, validatePick } from "../core/oneAndDone.js";
 import { applyHearnFallbacks, findDeadHearnEntries } from "../core/hearn.js";
 import { createSeason, createTestLeague, startNewSeason } from "../core/season.js";
 import { openTournament, resolveActiveSeasonForParticipant } from "../core/emailRouting.js";
+import { buildTOCCLiveStandings, estimateTOCCWeekFromLive } from "../core/toccLive.js";
 import {
   PASSWORD_RESET_TOKEN_TTL_MS,
   SESSION_MAX_AGE_MS,
@@ -29,11 +31,18 @@ import {
   verifySession,
 } from "../core/auth.js";
 import { executeCommand } from "../email/commands.js";
-import { renderResultsDigestEmail, renderSetPasswordEmail } from "../email/templates.js";
+import {
+  renderBroadcastEmail,
+  renderResultsDigestEmail,
+  renderSetPasswordEmail,
+  renderTOCCRoundUpdateEmail,
+} from "../email/templates.js";
 import { getAuthedClient, sendEmail, type OAuth2Client } from "../email/gmailClient.js";
 import { createOddsCache, oddsForTournament, type OddsCache } from "../providers/dataGolfOdds.js";
 import { createPlayerListCache, type PlayerListCache } from "../providers/dataGolfPlayers.js";
 import { createGolferFormCache, type GolferFormCache } from "../providers/dataGolfForm.js";
+import { fetchLiveInPlay, liveDataForTournament } from "../providers/dataGolfLive.js";
+import { sendPickRemindersNow, sendPicksDigestFor, sendTOCCPicksAnnouncementFor } from "../jobs/notifications.js";
 import type { Participant, Season } from "../types.js";
 import { ADMIN_HTML } from "./html.js";
 
@@ -65,6 +74,8 @@ interface RouteContext {
   playerListCache: PlayerListCache | null;
   /** null when DATAGOLF_API_KEY isn't configured — recent-form/course-history sections are then omitted from the pick page. */
   golferFormCache: GolferFormCache | null;
+  /** undefined when DATAGOLF_API_KEY isn't configured — the admin Emails tab's TOCC Round Update "send now" is then unavailable. */
+  dataGolfApiKey?: string;
 }
 
 class HttpError extends Error {
@@ -566,6 +577,8 @@ const routes: Route[] = [
         roster: seasonRoster(data, season.id),
         toccMembers: data.seasonEntries.filter((e) => e.seasonId === season.id && e.isTOCCMember),
         tournaments,
+        // The admin Emails tab defaults its tournament pickers to this one.
+        openTournamentId: openTournament(data, season.id)?.id ?? null,
         // Tournament id -> field golfer names, for the admin pick-override dropdown.
         fields: Object.fromEntries(
           tournaments.map((t) => [t.id, [...tournamentField(data, t.id)].map((gid) => golferName(data, gid)).sort()])
@@ -1052,6 +1065,126 @@ const routes: Route[] = [
       };
     },
   },
+
+  // ---- service emails (admin) -------------------------------------------------
+  {
+    /**
+     * Manually fires one of the service emails for a specific tournament,
+     * right now — for testing, rehearsal, or catching up on one that never
+     * fired automatically. PICK_REMINDER/PICKS_DIGEST/TOCC_PICKS_ANNOUNCEMENT
+     * go through the exact same send+dedupe functions the automatic sweep
+     * uses (jobs/notifications.js), so a manual send correctly stops the
+     * sweep from also sending it. RESULTS_DIGEST just re-runs the same
+     * event-driven digest the results-posting route already sends.
+     * TOCC_ROUND_UPDATE is the one exception: it deliberately does NOT write
+     * a dedupe record, because jobs/toccLive.ts's automatic sweep tracks
+     * "highest round already sent" to decide what's next — a manual send at
+     * the wrong round would desync that and skip a real round's email. It
+     * always reports whatever round DataGolf's live feed currently has,
+     * ignoring whether that round has actually finished.
+     */
+    method: "POST",
+    pattern: /^\/api\/admin\/emails\/send$/,
+    auth: "admin",
+    handler: async ({ body, store, sendMail, baseUrl, dataGolfApiKey }) => {
+      const type = String(body.type ?? "");
+      const tournamentId = String(body.tournamentId ?? "");
+      const data = await store.read();
+      const tournament = data.tournaments.find((t) => t.id === tournamentId);
+      if (!tournament) throw new HttpError(404, `No tournament ${tournamentId}`);
+      const season = data.seasons.find((s) => s.id === tournament.seasonId);
+      if (!season) throw new HttpError(404, `No season for tournament ${tournamentId}`);
+
+      switch (type) {
+        case "PICK_REMINDER": {
+          const sent = await sendPickRemindersNow(store, sendMail, baseUrl, data, season, tournament);
+          return { sent };
+        }
+        case "PICKS_DIGEST": {
+          const sent = await sendPicksDigestFor(store, sendMail, data, season, tournament);
+          return { sent };
+        }
+        case "TOCC_PICKS_ANNOUNCEMENT": {
+          const sent = await sendTOCCPicksAnnouncementFor(store, sendMail, data, season, tournament);
+          return { sent };
+        }
+        case "RESULTS_DIGEST": {
+          if (!data.results.some((r) => r.tournamentId === tournament.id)) {
+            throw new HttpError(400, "No results posted for this tournament yet");
+          }
+          await sendResultsDigest(data, tournament.id, sendMail);
+          return { sent: seasonRoster(data, season.id).length };
+        }
+        case "TOCC_ROUND_UPDATE": {
+          if (!dataGolfApiKey) throw new HttpError(400, "DATAGOLF_API_KEY isn't configured");
+          const toccIds = toccMemberIds(data, season.id);
+          const roster = data.participants.filter((p) => toccIds.includes(p.id));
+          if (roster.length === 0) throw new HttpError(400, "No TOCC members on this season's roster");
+
+          const live = await fetchLiveInPlay(dataGolfApiKey);
+          const scoped = liveDataForTournament(live, tournament.name);
+          if (!scoped) throw new HttpError(400, `No live DataGolf data available for "${tournament.name}" right now`);
+
+          const round = Math.min(Math.max(scoped.currentRound, 1), 4);
+          const nameByParticipantId = new Map(data.participants.map((p) => [p.id, p.nickname || p.name]));
+          const weekPicks = seasonPicks(data, season.id).filter((p) => p.tournamentId === tournament.id);
+          const standings = buildTOCCLiveStandings(data, toccIds, weekPicks, scoped.rows);
+          const rows = standings.map((s) => ({
+            name: nameByParticipantId.get(s.participantId) ?? s.participantId,
+            golferName: s.golferName,
+            currentPos: s.currentPos,
+            currentScore: s.currentScore,
+          }));
+
+          let money: { payments: { from: string; to: string; amount: number }[]; seasonNet: Record<string, number>; nameByParticipantId: Map<string, string> } | undefined;
+          if (round >= 4) {
+            const weekResult = estimateTOCCWeekFromLive(data, toccIds, weekPicks, scoped.rows, tournament.id, {
+              stake: season.toccStake,
+              stakeIfWinner: season.toccStakeIfWinner,
+            });
+            const priorReport = buildSeasonReport(data, season);
+            const seasonNet: Record<string, number> = { ...priorReport.tocc.netByParticipant };
+            for (const payment of weekResult.payments) {
+              seasonNet[payment.from] = (seasonNet[payment.from] ?? 0) - payment.amount;
+              seasonNet[payment.to] = (seasonNet[payment.to] ?? 0) + payment.amount;
+            }
+            money = { payments: weekResult.payments, seasonNet, nameByParticipantId };
+          }
+
+          const { subject, bodyText, bodyHtml } = renderTOCCRoundUpdateEmail(tournament.name, round, rows, money);
+          const recipients = roster.map((p) => p.email).join(", ");
+          await sendMail({ to: recipients, subject, bodyText, bodyHtml });
+          return { sent: roster.length, round };
+        }
+        default:
+          throw new HttpError(400, `Unknown email type "${type}"`);
+      }
+    },
+  },
+  {
+    /** Free-text broadcast to some or all of a season's roster. */
+    method: "POST",
+    pattern: /^\/api\/seasons\/([^/]+)\/broadcast$/,
+    auth: "admin",
+    handler: async ({ params, body, store, sendMail }) => {
+      const data = await store.read();
+      const season = requireSeason(data, params[0]!);
+      const roster = seasonRoster(data, season.id);
+
+      const requestedIds = Array.isArray(body.participantIds) ? (body.participantIds as unknown[]).map(String) : null;
+      const targets = requestedIds && requestedIds.length > 0 ? roster.filter((p) => requestedIds.includes(p.id)) : roster;
+      if (targets.length === 0) throw new HttpError(400, "No recipients");
+
+      const subject = String(body.subject ?? "").trim();
+      const message = String(body.message ?? "").trim();
+      if (!subject || !message) throw new HttpError(400, "Subject and message are required");
+
+      const { bodyText, bodyHtml } = renderBroadcastEmail(subject, message);
+      const recipients = targets.map((p) => p.email).join(", ");
+      await sendMail({ to: recipients, subject, bodyText, bodyHtml });
+      return { sent: targets.length };
+    },
+  },
 ];
 
 async function readBody(req: IncomingMessage): Promise<Record<string, unknown>> {
@@ -1197,6 +1330,7 @@ export function createAdminServer(options: AdminServerOptions) {
           oddsCache,
           playerListCache,
           golferFormCache,
+          dataGolfApiKey: options.dataGolfApiKey,
         });
         return send(200, result);
       } catch (error) {

@@ -107,6 +107,7 @@ export const ADMIN_HTML = /* html */ `<!doctype html>
     <button data-tab="results" data-admin>Results</button>
     <button data-tab="roster" data-admin>Roster</button>
     <button data-tab="seasons" data-admin>Seasons</button>
+    <button data-tab="emails" data-admin>Emails</button>
     <button data-tab="settings" style="margin-left:auto">Settings</button>
   </nav>
 </header>
@@ -120,6 +121,7 @@ export const ADMIN_HTML = /* html */ `<!doctype html>
   <section id="results"></section>
   <section id="roster"></section>
   <section id="seasons"></section>
+  <section id="emails"></section>
   <section id="settings"></section>
 </main>
 </div>
@@ -289,7 +291,7 @@ function render() {
     return;
   }
   ({ picks: renderPicks, hearn: renderHearn, schedule: renderSchedule,
-     results: renderResults, roster: renderRoster, seasons: renderSeasons })[tab](el);
+     results: renderResults, roster: renderRoster, seasons: renderSeasons, emails: renderEmails })[tab](el);
 }
 
 // ---- shared standings/pots rendering (used by My Picks and the admin Dashboard) ----
@@ -944,6 +946,75 @@ function renderSeasons(el) {
       catch (e) { toast(e.message, true); }
     };
   });
+}
+
+// ---- Emails (admin) ---------------------------------------------------------
+
+function emailTournamentSelectHtml(type, selectedId) {
+  return '<select data-etour="' + type + '">' +
+    REPORT.tournaments.map((t) => '<option value="' + t.id + '"' + (t.id === selectedId ? ' selected' : '') + '>' + esc(t.name) + '</option>').join('') +
+    '</select>';
+}
+
+function renderEmails(el) {
+  const defaultTid = REPORT.openTournamentId || (REPORT.tournaments[0] && REPORT.tournaments[0].id) || '';
+  const rows = [
+    { type: 'PICK_REMINDER', label: 'Pick Reminder', desc: "Emails everyone on the roster who hasn't picked yet for the selected tournament." },
+    { type: 'PICKS_DIGEST', label: 'Picks Digest', desc: "Whole roster \\u2014 everyone's pick for the selected tournament, with Greller Alert!! tags." },
+    { type: 'TOCC_PICKS_ANNOUNCEMENT', label: 'TOCC Picks Announcement', desc: "TOCC members only \\u2014 everyone's pick, with SOLO! tags." },
+    { type: 'RESULTS_DIGEST', label: 'Results Digest', desc: "Whole roster \\u2014 everyone's pick and how it finished. Requires results already posted." },
+    { type: 'TOCC_ROUND_UPDATE', label: 'TOCC Round Update', desc: "TOCC members only \\u2014 live standings pulled from DataGolf right now (round 4+ includes an estimated payout)." },
+  ];
+
+  el.innerHTML =
+    '<div class="card"><h2>Service emails</h2>' +
+    '<p class="muted">Each button sends that email immediately for the selected tournament, using current data \\u2014 separate from (and doesn\\'t interfere with) the automatic schedule.</p>' +
+    rows.map((r) =>
+      '<div class="row" style="border-top:1px solid var(--line);padding-top:10px;margin-top:10px">' +
+        '<div style="flex:1;min-width:220px"><strong>' + esc(r.label) + '</strong><br><span class="muted">' + r.desc + '</span></div>' +
+        emailTournamentSelectHtml(r.type, defaultTid) +
+        '<button class="act ghost" data-esend="' + r.type + '">Send now</button>' +
+      '</div>'
+    ).join('') +
+    '</div>' +
+    '<div class="card"><h2>Message participants</h2>' +
+      '<div class="row"><input id="bcSubject" placeholder="Subject" style="flex:1;min-width:220px"></div>' +
+      '<textarea id="bcMessage" placeholder="Message"></textarea>' +
+      '<div class="row" style="margin-top:8px"><label class="muted"><input type="checkbox" id="bcAll" checked> Send to entire roster</label></div>' +
+      '<div id="bcSubset" class="row" style="display:none">' +
+        REPORT.roster.map((p) => '<label class="muted" style="display:inline-flex;gap:4px;align-items:center"><input type="checkbox" data-bcp="' + p.id + '"> ' + esc(p.nickname || p.name) + '</label>').join('') +
+      '</div>' +
+      '<div class="row" style="margin-top:8px"><button class="act" id="bcGo">Send message</button></div>' +
+    '</div>';
+
+  el.querySelectorAll('[data-esend]').forEach((b) => {
+    b.onclick = async () => {
+      const type = b.dataset.esend;
+      const tournamentId = el.querySelector('[data-etour="' + type + '"]').value;
+      if (!tournamentId) return toast('No tournament selected', true);
+      b.disabled = true;
+      try {
+        const r = await api('/api/admin/emails/send', 'POST', { type, tournamentId });
+        toast('Sent to ' + r.sent + (r.sent === 1 ? ' person' : ' people') + (r.round ? ' (round ' + r.round + ')' : ''));
+      } catch (e) { toast(e.message, true); }
+      b.disabled = false;
+    };
+  });
+
+  $('bcAll').onchange = () => { $('bcSubset').style.display = $('bcAll').checked ? 'none' : 'flex'; };
+  $('bcGo').onclick = async () => {
+    const subject = $('bcSubject').value.trim();
+    const message = $('bcMessage').value.trim();
+    if (!subject || !message) return toast('Subject and message are required', true);
+    const all = $('bcAll').checked;
+    const participantIds = all ? null : [...el.querySelectorAll('[data-bcp]:checked')].map((c) => c.dataset.bcp);
+    if (!all && participantIds.length === 0) return toast('Pick at least one recipient', true);
+    try {
+      const r = await api('/api/seasons/' + SEASON.id + '/broadcast', 'POST', { subject, message, participantIds });
+      toast('Sent to ' + r.sent + (r.sent === 1 ? ' person' : ' people'));
+      $('bcSubject').value = ''; $('bcMessage').value = '';
+    } catch (e) { toast(e.message, true); }
+  };
 }
 
 boot().catch((e) => toast(e.message, true));

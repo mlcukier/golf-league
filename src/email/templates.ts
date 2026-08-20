@@ -278,6 +278,16 @@ export function renderResultsDigestEmail(
   return { subject, bodyText, bodyHtml };
 }
 
+/** Free-text admin broadcast to some/all of a season's roster — no fixed structure beyond the shared shell, subject and body are whatever the admin typed. */
+export function renderBroadcastEmail(subject: string, message: string): { subject: string; bodyText: string; bodyHtml: string } {
+  const paragraphsHtml = message
+    .split(/\n{2,}/)
+    .map((para) => `<p style="margin:0 0 16px;font-size:15px;line-height:1.5;color:${TEXT};">${escHtml(para).replace(/\n/g, "<br>")}</p>`)
+    .join("");
+  const bodyHtml = emailShell(subject, paragraphsHtml);
+  return { subject, bodyText: message, bodyHtml };
+}
+
 // ---- TOCC side action — its own email thread, TOCC members only ----
 
 const TOCC_SUBJECT = "TOCC Side Action Update";
