@@ -78,17 +78,25 @@ export interface Participant {
 
 /**
  * Dedupe record for a scheduled email so a periodic sweep never sends the
- * same nudge/digest twice. PICKS_DIGEST is one record per tournament (a
- * single broadcast email); PICK_REMINDER is one record per participant, since
- * each non-picker is nudged individually.
+ * same nudge/digest twice. PICKS_DIGEST and TOCC_PICKS_ANNOUNCEMENT are one
+ * record per tournament (a single broadcast email); PICK_REMINDER is one
+ * record per participant, since each non-picker is nudged individually;
+ * TOCC_ROUND_UPDATE is one record per (tournament, round) — up to 4 per
+ * tournament, one per completed round of play.
  */
-export type NotificationType = "PICK_REMINDER" | "PICKS_DIGEST";
+export type NotificationType =
+  | "PICK_REMINDER"
+  | "PICKS_DIGEST"
+  | "TOCC_PICKS_ANNOUNCEMENT"
+  | "TOCC_ROUND_UPDATE";
 
 export interface NotificationRecord {
   type: NotificationType;
   tournamentId: string;
   /** Set only for PICK_REMINDER. */
   participantId?: string;
+  /** Set only for TOCC_ROUND_UPDATE: which round (1-4) this update covered. */
+  round?: number;
   sentAt: string; // ISO datetime
 }
 

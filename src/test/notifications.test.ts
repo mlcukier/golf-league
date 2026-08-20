@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   findDueReminders,
   findDuePicksDigests,
+  findDueTOCCPicksAnnouncements,
   findTournamentsNeedingHearnResolution,
   liveGrellerCandidateIds,
 } from "../core/notifications.js";
@@ -143,6 +144,50 @@ describe("findDuePicksDigests", () => {
     const now = new Date("2026-01-15T00:00:00Z"); // ~7 days after t1's deadline
     const data = baseData({ tournaments: [tournament("t1", 1)] });
     expect(findDuePicksDigests(data, now)).toHaveLength(0);
+  });
+});
+
+describe("findDueTOCCPicksAnnouncements", () => {
+  it("fires once the deadline has passed for a season with TOCC members", () => {
+    const now = new Date("2026-01-08T12:00:00Z");
+    const data = baseData({
+      tournaments: [tournament("t1", 1)],
+      seasonEntries: [
+        { seasonId: SEASON_ID, participantId: "p1", isTOCCMember: true },
+        { seasonId: SEASON_ID, participantId: "p2", isTOCCMember: false },
+      ],
+    });
+    expect(findDueTOCCPicksAnnouncements(data, now)).toEqual([
+      { season: data.seasons[0], tournament: data.tournaments[0] },
+    ]);
+  });
+
+  it("does not fire for a season with no TOCC members at all", () => {
+    const now = new Date("2026-01-08T12:00:00Z");
+    const data = baseData({ tournaments: [tournament("t1", 1)] }); // default fixture: isTOCCMember false for everyone
+    expect(findDueTOCCPicksAnnouncements(data, now)).toHaveLength(0);
+  });
+
+  it("does not re-fire once already sent, independent of the whole-roster digest's dedupe log", () => {
+    const now = new Date("2026-01-08T12:00:00Z");
+    const data = baseData({
+      tournaments: [tournament("t1", 1)],
+      seasonEntries: [{ seasonId: SEASON_ID, participantId: "p1", isTOCCMember: true }],
+      notifications: [
+        { type: "PICKS_DIGEST", tournamentId: "t1", sentAt: now.toISOString() },
+        { type: "TOCC_PICKS_ANNOUNCEMENT", tournamentId: "t1", sentAt: now.toISOString() },
+      ],
+    });
+    expect(findDueTOCCPicksAnnouncements(data, now)).toHaveLength(0);
+  });
+
+  it("does not fire before the deadline", () => {
+    const now = new Date("2026-01-08T00:00:00Z");
+    const data = baseData({
+      tournaments: [tournament("t1", 1)],
+      seasonEntries: [{ seasonId: SEASON_ID, participantId: "p1", isTOCCMember: true }],
+    });
+    expect(findDueTOCCPicksAnnouncements(data, now)).toHaveLength(0);
   });
 });
 

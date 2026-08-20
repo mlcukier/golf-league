@@ -2,16 +2,19 @@ import { JsonLeagueStore } from "./store/jsonStore.js";
 import { createSendMail, startAdminServer } from "./admin/server.js";
 import { runNotificationSweep } from "./jobs/notifications.js";
 import { runResultsPullSweep } from "./jobs/resultsPull.js";
+import { runTOCCLiveSweep } from "./jobs/toccLive.js";
 
 /**
  * Entry point for the always-on box: starts the web server (participant
  * self-service + admin) over a JSON-file league database, plus a recurring
  * sweep for time-based work — pick reminders, Hearn fallback resolution, the
- * post-deadline picks digest (jobs/notifications.ts), and auto-pulling real
- * results from DataGolf once a tournament's finished (jobs/resultsPull.ts).
- * The results digest itself is event-driven, not scheduled — it fires
- * directly off applyResults in admin/server.ts, whether results arrived via
- * that auto-pull or an admin's manual paste.
+ * post-deadline picks digest and TOCC-only picks announcement
+ * (jobs/notifications.ts), auto-pulling real results from DataGolf once a
+ * tournament's finished (jobs/resultsPull.ts), and the TOCC round-by-round
+ * live standings emails (jobs/toccLive.ts). The results digest itself is
+ * event-driven, not scheduled — it fires directly off applyResults in
+ * admin/server.ts, whether results arrived via that auto-pull or an admin's
+ * manual paste.
  *
  *   LEAGUE_DB=./data/league.json ADMIN_PORT=8080 SESSION_SECRET=pick-a-secret \
  *     GMAIL_STATE_DIR=~/.clawdbot-gmail-worker DATAGOLF_API_KEY=xxxx \
@@ -44,6 +47,7 @@ const sweep = () => {
   void runNotificationSweep(store, sendMail, appUrl).catch((err) => console.error("Notification sweep failed:", err));
   if (dataGolfApiKey) {
     void runResultsPullSweep(store, sendMail, dataGolfApiKey).catch((err) => console.error("Results pull sweep failed:", err));
+    void runTOCCLiveSweep(store, sendMail, dataGolfApiKey).catch((err) => console.error("TOCC live sweep failed:", err));
   }
 };
 sweep();

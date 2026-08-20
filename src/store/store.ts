@@ -107,7 +107,8 @@ export function golferName(data: LeagueData, golferId: string): string {
  * entry tends to be "First Last") — so the same real person never ends up
  * as two different golfer records with two different one-and-done pools.
  */
-function normalizeGolferName(name: string): string {
+/** Exported for callers matching names from a different feed (e.g. providers/dataGolfLive.ts) against our canonical golfer names. */
+export function normalizeGolferName(name: string): string {
   return name
     .toLowerCase()
     .replace(/[.,]/g, "")

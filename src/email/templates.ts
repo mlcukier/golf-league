@@ -278,6 +278,183 @@ export function renderResultsDigestEmail(
   return { subject, bodyText, bodyHtml };
 }
 
+// ---- TOCC side action — its own email thread, TOCC members only ----
+
+const TOCC_SUBJECT = "TOCC Side Action Update";
+
+export interface TOCCPicksAnnouncementRow {
+  name: string;
+  golferName: string | null;
+  source: Pick["source"] | null;
+  /** Nobody else in the TOCC cohort picked this golfer this week. */
+  isSolo: boolean;
+}
+
+/**
+ * Sent right after the pick deadline, TOCC members only — same idea as the
+ * whole-roster picks digest, but "SOLO!" instead of "Greller Alert!!" since
+ * uniqueness here is scored against the TOCC cohort, not the whole league.
+ */
+export function renderTOCCPicksAnnouncementEmail(
+  tournamentName: string,
+  rows: TOCCPicksAnnouncementRow[]
+): { subject: string; bodyText: string; bodyHtml: string } {
+  const heading = `TOCC picks — ${tournamentName}`;
+  const lines = rows.map((r) => {
+    const pickText = r.golferName ? r.golferName + (r.source === "hearn" ? " (Hearn)" : "") : "No pick";
+    return `${r.name}: ${pickText}${r.isSolo ? "  SOLO!" : ""}`;
+  });
+  const bodyText = [heading, "", ...lines].join("\n");
+
+  const tableRows = rows
+    .map((r) => {
+      const pickCell = r.golferName
+        ? escHtml(r.golferName) + (r.source === "hearn" ? ` <span style="color:${MUTED};font-size:12px;">(Hearn)</span>` : "")
+        : `<span style="color:${MUTED};">No pick</span>`;
+      const soloCell = r.isSolo ? `<span style="color:${ALERT};font-weight:700;">SOLO!</span>` : "";
+      return `<tr>
+        <td style="padding:9px 8px;border-bottom:1px solid ${BORDER};font-size:14px;">${escHtml(r.name)}</td>
+        <td style="padding:9px 8px;border-bottom:1px solid ${BORDER};font-size:14px;">${pickCell}</td>
+        <td style="padding:9px 8px;border-bottom:1px solid ${BORDER};font-size:14px;">${soloCell}</td>
+      </tr>`;
+    })
+    .join("");
+  const contentHtml = `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+    <tr style="text-align:left;">
+      <th style="padding:6px 8px;border-bottom:1px solid ${BORDER};font-size:11px;text-transform:uppercase;letter-spacing:.03em;color:${MUTED};">Participant</th>
+      <th style="padding:6px 8px;border-bottom:1px solid ${BORDER};font-size:11px;text-transform:uppercase;letter-spacing:.03em;color:${MUTED};">Pick</th>
+      <th style="padding:6px 8px;border-bottom:1px solid ${BORDER};"></th>
+    </tr>
+    ${tableRows}
+  </table>`;
+  const bodyHtml = emailShell(heading, contentHtml);
+
+  return { subject: TOCC_SUBJECT, bodyText, bodyHtml };
+}
+
+const ROUND_LABELS: Record<number, string> = { 1: "Thursday", 2: "Friday", 3: "Saturday", 4: "Sunday — Final" };
+
+export interface TOCCRoundStandingRow {
+  name: string;
+  golferName: string | null;
+  currentPos: string | null;
+  currentScore: number | null;
+}
+
+export interface TOCCRoundMoney {
+  payments: { from: string; to: string; amount: number }[];
+  /** Prior weeks' official net plus this week's estimated payments. */
+  seasonNet: Record<string, number>;
+  nameByParticipantId: Map<string, string>;
+}
+
+function formatScore(score: number | null): string {
+  if (score === null) return "—";
+  if (score === 0) return "E";
+  return score > 0 ? `+${score}` : `${score}`;
+}
+
+/**
+ * Sent once a day's round of play wraps up (Thursday-Sunday), TOCC members
+ * only, ordered by current standing. The Sunday send additionally carries
+ * `money` — this week's estimated TOCC payouts and the running season
+ * balance, computed from live scoring since official earnings won't post
+ * for days (see core/toccLive.ts's estimateTOCCWeekFromLive).
+ */
+export function renderTOCCRoundUpdateEmail(
+  tournamentName: string,
+  round: number,
+  rows: TOCCRoundStandingRow[],
+  money?: TOCCRoundMoney
+): { subject: string; bodyText: string; bodyHtml: string } {
+  const roundLabel = ROUND_LABELS[round] ?? `Round ${round}`;
+  const heading = `TOCC standings — ${tournamentName} (${roundLabel})`;
+
+  const lines = rows.map((r) => {
+    if (!r.golferName) return `${r.name}: No pick`;
+    return `${r.name}: ${r.golferName} — ${r.currentPos ?? "—"} (${formatScore(r.currentScore)})`;
+  });
+  const moneyLines: string[] = [];
+  if (money) {
+    moneyLines.push("", "This week's TOCC action (estimate — pending official results):");
+    if (money.payments.length === 0) {
+      moneyLines.push("  Nobody owes anybody — dead even week.");
+    } else {
+      for (const p of money.payments) {
+        const from = money.nameByParticipantId.get(p.from) ?? p.from;
+        const to = money.nameByParticipantId.get(p.to) ?? p.to;
+        moneyLines.push(`  ${from} owes ${to} $${p.amount.toLocaleString()}`);
+      }
+    }
+    moneyLines.push("", "Season balance (estimate — includes this week):");
+    for (const [participantId, net] of Object.entries(money.seasonNet)) {
+      const name = money.nameByParticipantId.get(participantId) ?? participantId;
+      const sign = net >= 0 ? "+" : "-";
+      moneyLines.push(`  ${name}: ${sign}$${Math.abs(net).toLocaleString()}`);
+    }
+  }
+  const bodyText = [heading, "", ...lines, ...moneyLines].join("\n");
+
+  const tableRows = rows
+    .map((r) => {
+      if (!r.golferName) {
+        return `<tr>
+          <td style="padding:9px 8px;border-bottom:1px solid ${BORDER};font-size:14px;">${escHtml(r.name)}</td>
+          <td style="padding:9px 8px;border-bottom:1px solid ${BORDER};font-size:14px;color:${MUTED};" colspan="3">No pick</td>
+        </tr>`;
+      }
+      return `<tr>
+        <td style="padding:9px 8px;border-bottom:1px solid ${BORDER};font-size:14px;">${escHtml(r.name)}</td>
+        <td style="padding:9px 8px;border-bottom:1px solid ${BORDER};font-size:14px;">${escHtml(r.golferName)}</td>
+        <td style="padding:9px 8px;border-bottom:1px solid ${BORDER};font-size:14px;">${escHtml(r.currentPos ?? "—")}</td>
+        <td style="padding:9px 8px;border-bottom:1px solid ${BORDER};font-size:14px;text-align:right;">${escHtml(formatScore(r.currentScore))}</td>
+      </tr>`;
+    })
+    .join("");
+
+  let moneyHtml = "";
+  if (money) {
+    const paymentsHtml =
+      money.payments.length === 0
+        ? `<p style="margin:0 0 8px;font-size:14px;color:${MUTED};">Nobody owes anybody — dead even week.</p>`
+        : money.payments
+            .map((p) => {
+              const from = escHtml(money.nameByParticipantId.get(p.from) ?? p.from);
+              const to = escHtml(money.nameByParticipantId.get(p.to) ?? p.to);
+              return `<p style="margin:0 0 6px;font-size:14px;">${from} owes ${to} <strong>$${p.amount.toLocaleString()}</strong></p>`;
+            })
+            .join("");
+    const netHtml = Object.entries(money.seasonNet)
+      .map(([participantId, net]) => {
+        const name = escHtml(money.nameByParticipantId.get(participantId) ?? participantId);
+        const sign = net >= 0 ? "+" : "-";
+        const color = net >= 0 ? BRAND : "#b8302a";
+        return `<p style="margin:0 0 6px;font-size:14px;">${name}: <strong style="color:${color};">${sign}$${Math.abs(net).toLocaleString()}</strong></p>`;
+      })
+      .join("");
+    moneyHtml = `
+      <h2 style="margin:20px 0 8px;font-size:14px;color:${TEXT};">This week's TOCC action</h2>
+      <p style="margin:0 0 10px;font-size:12px;color:${MUTED};">Estimated from live scoring — final once official results are posted.</p>
+      ${paymentsHtml}
+      <h2 style="margin:20px 0 8px;font-size:14px;color:${TEXT};">Season balance</h2>
+      ${netHtml}
+    `;
+  }
+
+  const contentHtml = `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+    <tr style="text-align:left;">
+      <th style="padding:6px 8px;border-bottom:1px solid ${BORDER};font-size:11px;text-transform:uppercase;letter-spacing:.03em;color:${MUTED};">Participant</th>
+      <th style="padding:6px 8px;border-bottom:1px solid ${BORDER};font-size:11px;text-transform:uppercase;letter-spacing:.03em;color:${MUTED};">Golfer</th>
+      <th style="padding:6px 8px;border-bottom:1px solid ${BORDER};font-size:11px;text-transform:uppercase;letter-spacing:.03em;color:${MUTED};">Pos</th>
+      <th style="padding:6px 8px;border-bottom:1px solid ${BORDER};font-size:11px;text-transform:uppercase;letter-spacing:.03em;color:${MUTED};text-align:right;">Score</th>
+    </tr>
+    ${tableRows}
+  </table>${moneyHtml}`;
+  const bodyHtml = emailShell(heading, contentHtml);
+
+  return { subject: TOCC_SUBJECT, bodyText, bodyHtml };
+}
+
 export const HELP_TEXT = [
   "Commands (put one per email, as the subject or the first line of the body):",
   "  PICK <golfer name>  — submit this week's pick",
