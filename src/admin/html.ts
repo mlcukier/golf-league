@@ -708,6 +708,23 @@ async function renderHearn(el) {
   };
 }
 
+/**
+ * datetime-local inputs are timezone-naive strings ("2026-08-20T10:03") with
+ * no offset — new Date() on the SERVER would interpret that as the
+ * server's own local time (this box runs UTC), not the admin's browser
+ * timezone, silently mis-storing every deadline typed in. Converting here,
+ * in the browser, uses the browser's actual local offset, so what the admin
+ * sees is what gets stored.
+ */
+function localInputToIso(value) {
+  return value ? new Date(value).toISOString() : null;
+}
+function isoToLocalInput(iso) {
+  const d = new Date(iso);
+  const pad = (n) => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + 'T' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+}
+
 function renderSchedule(el) {
   // Quarters 1-3's last tournament gets a "last of QN" pill; quarter 4's last
   // is always the finale already, which has its own obvious pill.
@@ -723,14 +740,21 @@ function renderSchedule(el) {
       '<label class="muted"><input type="checkbox" id="tFin"> season finale</label>' +
       '<button class="act" id="tGo">Add</button>' +
     '</div><p class="muted">Start time doubles as the pick deadline — picks must arrive strictly before it.</p></div>' +
-    '<div class="card"><h2>Schedule (' + REPORT.tournaments.length + ')</h2><table>' +
-      '<tr><th>#</th><th>Tournament</th><th>Starts / deadline</th><th>Field</th></tr>' +
+    '<div class="card"><h2>Schedule (' + REPORT.tournaments.length + ')</h2>' +
+      '<p class="muted">Deadlines seeded from DataGolf default to a conservative 10:00 UTC placeholder (DataGolf\\'s schedule has no real tee time) \\u2014 check/edit the actual first tee time before each week locks.</p>' +
+      '<table>' +
+      '<tr><th>#</th><th>Tournament</th><th>Starts / deadline</th><th></th></tr>' +
       REPORT.tournaments.map((t) => '<tr><td>' + t.sequence + '</td><td>' + esc(t.name) +
         (t.isSeasonFinale ? ' <span class="pill">finale</span>' : '') +
         (lastOfQuarter[t.sequence] ? ' <span class="pill">last of Q' + lastOfQuarter[t.sequence] + '</span>' : '') +
         '</td><td>' +
-        new Date(t.startTime).toLocaleString() + '</td><td><button class="act ghost" data-fld="' + t.id +
-        '">Set field</button></td></tr>').join('') + '</table></div>' +
+        new Date(t.startTime).toLocaleString() + '</td><td>' +
+        '<button class="act ghost" data-edit="' + t.id + '">Edit time</button> ' +
+        '<button class="act ghost" data-fld="' + t.id + '">Set field</button></td></tr>').join('') + '</table></div>' +
+    '<div class="card" id="editBox" style="display:none"><h2>Edit deadline for <span id="editName"></span></h2>' +
+      '<div class="row"><input id="editStart" type="datetime-local">' +
+        '<button class="act" id="editGo">Save</button></div>' +
+      '<p class="muted">Shown/entered in your browser\\'s local time.</p></div>' +
     '<div class="card" id="fldBox" style="display:none"><h2>Field for <span id="fldName"></span></h2>' +
       '<textarea id="fldTxt" placeholder="One golfer per line"></textarea>' +
       '<div class="row" style="margin-top:8px"><button class="act" id="fldGo">Save field</button></div></div>';
@@ -738,8 +762,24 @@ function renderSchedule(el) {
   $('tGo').onclick = async () => {
     try {
       await api('/api/tournaments', 'POST', { seasonId: SEASON.id, name: $('tName').value,
-        startTime: $('tStart').value, isSeasonFinale: $('tFin').checked });
+        startTime: localInputToIso($('tStart').value), isSeasonFinale: $('tFin').checked });
       toast('Tournament added'); loadSeason();
+    } catch (e) { toast(e.message, true); }
+  };
+  el.querySelectorAll('[data-edit]').forEach((b) => {
+    b.onclick = () => {
+      const t = REPORT.tournaments.find((x) => x.id === b.dataset.edit);
+      $('editBox').style.display = 'block';
+      $('editName').textContent = t.name;
+      $('editStart').value = isoToLocalInput(t.startTime);
+      $('editGo').dataset.id = t.id;
+    };
+  });
+  $('editGo').onclick = async () => {
+    try {
+      await api('/api/tournaments/' + $('editGo').dataset.id, 'PUT',
+        { startTime: localInputToIso($('editStart').value) });
+      toast('Deadline updated'); $('editBox').style.display = 'none'; loadSeason();
     } catch (e) { toast(e.message, true); }
   };
   el.querySelectorAll('[data-fld]').forEach((b) => {

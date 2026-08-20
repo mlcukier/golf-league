@@ -904,6 +904,32 @@ const routes: Route[] = [
     },
   },
   {
+    /**
+     * Edits an existing tournament — most commonly `startTime`, since that
+     * doubles as the pick deadline and the seed script (scripts/seed-
+     * schedule.mjs) only has DataGolf's date-only schedule to work with, so
+     * it fills in a conservative 10:00 UTC placeholder rather than the real
+     * tee time. Only the fields present in the body are changed.
+     */
+    method: "PUT",
+    pattern: /^\/api\/tournaments\/([^/]+)$/,
+    auth: "admin",
+    handler: async ({ params, body, store }) => {
+      const tournamentId = params[0]!;
+      let updated;
+      await store.update((d) => {
+        const tournament = d.tournaments.find((t) => t.id === tournamentId);
+        if (!tournament) throw new HttpError(404, `No tournament ${tournamentId}`);
+        if (body.name !== undefined) tournament.name = String(body.name);
+        if (body.startTime !== undefined) tournament.startTime = new Date(String(body.startTime)).toISOString();
+        if (body.sequence !== undefined) tournament.sequence = Number(body.sequence);
+        if (body.isSeasonFinale !== undefined) tournament.isSeasonFinale = Boolean(body.isSeasonFinale);
+        updated = tournament;
+      });
+      return updated;
+    },
+  },
+  {
     /** Removes a tournament that hasn't been picked yet — e.g. to undo a bad seed/import. */
     method: "DELETE",
     pattern: /^\/api\/tournaments\/([^/]+)$/,
