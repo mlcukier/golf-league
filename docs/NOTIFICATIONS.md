@@ -29,6 +29,8 @@ Two channels, both outbound only today (see "Inbound email" below):
 | Results digest | "Results — \<Tournament\>" | Results are (re)posted for a tournament — admin paste on the Results tab, or the DataGolf auto-pull sweep, both go through the same `applyResults` | Event-driven, immediate | Whole season roster, one email | None — deliberately resends on every re-post, so a corrected result sends a corrected digest |
 | TOCC round update (rounds 1-3) | "TOCC Side Action Update" | A round of live play finishes (Thu/Fri/Sat) for a tournament within 6 days of its start, per DataGolf's live feed | Sweep (needs a live DataGolf fetch, see below) | TOCC roster only | `notifications` log, type `TOCC_ROUND_UPDATE`, keyed on `tournamentId` + `round` (1-4) |
 | TOCC round update (round 4 / final) | "TOCC Side Action Update" | Same as above, round 4 | Sweep | TOCC roster only | Same, `round: 4` — additionally carries this week's estimated TOCC payments + running season balance |
+| Field withdrawal (participant) | "\<Golfer\> is out of the field — \<Tournament\>" | The twice-daily field auto-pull (below) finds a golfer dropped from the confirmed field who someone has picked | Sweep (own cadence, see below) | 1 affected participant | `notifications` log, type `FIELD_WITHDRAWAL`, keyed on `tournamentId` + `participantId` + `golferId` |
+| Field withdrawal (admin digest) | "Field update — \<Tournament\>: N pick(s) affected" | Same trigger, batched per tournament per check | Sweep | Every `isAdmin` participant, one email | None of its own — implicitly deduped by the participant-level records above (only fires when there's at least one newly-detected withdrawal) |
 
 All TOCC emails share one subject line (`TOCC_SUBJECT` in
 `src/email/templates.ts`) so a mail client threads the whole week's picks
@@ -68,12 +70,27 @@ shell (`emailShell`), sent multipart so it reads well in any client.
   moved past it" case lets a later tick catch up round-by-round instead of
   getting stuck waiting for a round that will never show as in-progress
   again.
+- `src/jobs/fieldUpdate.ts` — `runFieldUpdateSweep`: auto-pulls DataGolf's
+  confirmed field for the currently-open tournament of every active season
+  (`openTournament`, same function the pick page uses), at most once every
+  12 hours per tournament (`Tournament.fieldLastCheckedAt`, `CHECK_INTERVAL_MS`)
+  rather than every sweep tick — DataGolf's field-updates has nothing worth
+  polling every 15 minutes for, and this satisfies "at least twice a day."
+  Matches the response's `event_id` against the tournament's
+  `externalEventId` before touching anything (`fieldForTournament` in
+  `src/providers/dataGolfField.ts`) — same "never apply the wrong week's
+  data" discipline as odds/live-play, except this endpoint's response
+  happens to carry a real event id to match on rather than only a fuzzy
+  event-name string. Replaces `data.fields[tournamentId]` outright (the
+  same field the admin's manual paste route writes to) and diffs against
+  whatever was stored right before that replacement to find any golfer who
+  dropped out; any drop with an existing pick fires the two emails above.
 - `src/admin/server.ts` — `sendResultsDigest` / `applyResults`: the one
   event-driven email, called straight from the results-posting route (and
   from `resultsPull.ts`), not from any sweep.
 
-Both `dataGolfApiKey`-gated jobs (`resultsPull`, `toccLive`) are skipped
-entirely when `DATAGOLF_API_KEY` isn't set — see `index.ts`.
+Every `dataGolfApiKey`-gated job (`resultsPull`, `toccLive`, `fieldUpdate`)
+is skipped entirely when `DATAGOLF_API_KEY` isn't set — see `index.ts`.
 
 ## The dedupe mechanism
 
@@ -114,6 +131,25 @@ needed the most machinery (live fetch + multi-step dedupe):
 5. Test the pure logic directly (no store, no mocks); for a job file, test
    with `MemoryLeagueStore` and a fake `sendMail`/fetch, the same pattern
    `src/test/toccLive.test.ts` and `src/test/dataGolfLive.test.ts` use.
+
+## Known limitations specific to the field-withdrawal alerts
+
+- **The very first automated check of a tournament's field never alerts,
+  even if it replaces a manually-typed field.** There's nothing stored to
+  diff against yet on that first check (`Tournament.fieldLastCheckedAt`
+  unset), so it can't tell "golfer removed" from "field set for the first
+  time." That means the **second** automated check after an admin's hand-typed
+  field paste could produce false-positive withdrawal alerts if any manually-
+  typed name doesn't normalize-match DataGolf's own `player_name` spelling
+  (`findGolferByName`/`normalizeGolferName` in `src/store/store.ts`) — it'll
+  read as "golfer X and golfer Y both dropped out" when really they were just
+  two different `Golfer` records for the same person. Worth checking the
+  Golfers list for accidental duplicates if an alert looks surprising right
+  after a manual field paste.
+- **Only ever compares the two most recent snapshots**, 12+ hours apart. A
+  golfer who withdraws and is replaced by a late addition inside that window
+  is still caught (the withdrawal is real either way), but there's no
+  finer-grained history of exactly when it happened.
 
 ## Inbound email — built, not wired up
 

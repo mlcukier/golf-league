@@ -106,6 +106,24 @@ are in [docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md). The code:
 payout by feeding synthetic results into the real `computeTOCCWeek`), and
 `src/jobs/toccLive.ts` (the sweep that decides when a round's email is due).
 
+## Field withdrawal alerts
+
+`src/jobs/fieldUpdate.ts` auto-pulls DataGolf's confirmed field for the
+currently-open tournament of every active season, at least twice a day
+(`CHECK_INTERVAL_MS`, 12h). It replaces the stored field outright — the same
+`data.fields[tournamentId]` the admin's manual "Set field" button writes to —
+then diffs against whatever was stored right before that replacement. Any
+golfer who dropped out of the field with an existing pick against them gets
+that participant an email ("\<Golfer\> is out of the field — \<Tournament\>",
+inviting a re-pick if the deadline hasn't passed, or noting that only an
+admin override can fix it if it has) plus a batched digest to every admin.
+Each (tournament, participant, golfer) triple is only ever alerted once
+(`FIELD_WITHDRAWAL` in the notifications dedupe log). See
+[docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md) for the full trigger/timing
+detail and known edge cases (notably: the very first automated check of a
+tournament's field is never treated as a withdrawal, since there's nothing
+stored yet to diff against).
+
 ## Data source: DataGolf
 
 This app treats DataGolf's API docs as a starting hypothesis, not ground
@@ -119,7 +137,7 @@ trusting either this doc or their docs.
 | Endpoint | Used for | Notes |
 | --- | --- | --- |
 | `get-schedule` | Season schedule (`scripts/seed-schedule.mjs`) | Date/player data only, no money involved |
-| `field-updates` | This week's confirmed field | Same |
+| `field-updates` | This week's confirmed field — auto-pulled at least twice a day by `src/jobs/fieldUpdate.ts` for the currently-open tournament of every active season; the admin `PUT /api/tournaments/:id/field` route (manual paste) remains as a backfill/correction path | Response carries a real `event_id`, confirmed live to match this app's own `externalEventId` — `fieldForTournament` in `src/providers/dataGolfField.ts` only applies the field when that matches, same "never apply the wrong week" discipline as odds/live-play below, but on a real id instead of a fuzzy event-name compare |
 | `historical-event-data/events?tour=&event_id=&year=` | **Real results** — auto-pulled ~4 days after a tournament starts by `src/jobs/resultsPull.ts` | Two endpoints were tried and ruled out first: `historical-event-data/event-stats` (assumed from docs alone) doesn't exist — it 404s; `historical-raw-data/rounds` is real but carries only strokes-gained/round stats and a finish, no money. `event_stats` rows on *this* endpoint carry `earnings`, `fin_text`, and `fec_points` (FedExCup points) per player, and post fast — the 2026 FedEx St. Jude Championship's real results (Scheffler's $3.6M win included) were live on the API the day after the event finished |
 | `preds/pre-tournament` | Live win odds shown next to each golfer in the pick/Hearn pickers | No way to request a *specific* future event — only whichever one DataGolf currently has predictions for, which can lag the actual upcoming tournament by days. `oddsForTournament` (`src/providers/dataGolfOdds.ts`) only attaches odds when the response's `event_name` matches the tournament being priced; otherwise odds are shown as unavailable rather than risking the wrong week's numbers |
 | `preds/get-dg-rankings` (filtered to `primary_tour: "PGA"`) | Full ~188-player PGA Tour roster, for the season-long Hearn fallback list | `get-player-list` (used for the weekly field) has no tour filter and returns ~3,500 players across every tour DataGolf tracks worldwide — too broad for a fallback list |
@@ -171,9 +189,12 @@ have no pick to make and would sit there with no results forever, which (per
 `core/emailRouting.ts`) blocks every participant's pick target until someone
 backfills real results. Set `DATAGOLF_INCLUDE_COMPLETED=1` to seed the whole
 year anyway. Pick deadlines default to 10:00 UTC on each start date (DataGolf
-gives no tee time) — adjust in the Schedule tab if precision matters. Set the
-field for a tournament the same way, straight from `field-updates`, via the
-admin `PUT /api/tournaments/:id/field` route.
+gives no tee time) — adjust in the Schedule tab if precision matters. The
+field itself is auto-pulled once a tournament becomes the currently-open one
+(see "Field withdrawal alerts" below) — no manual step needed unless you want
+it set early, in which case the admin `PUT /api/tournaments/:id/field` route
+(the Schedule tab's "Set field" button) takes the same `field-updates` data
+by hand.
 
 ## Multi-year and test leagues
 
@@ -212,11 +233,13 @@ src/
     dataGolfPlayers.ts       Full PGA Tour roster fetch + cache, for Hearn Picks
     dataGolfForm.ts          Recent-form + course-history fetch + cache, for the pick page
     dataGolfLive.ts          Live in-play leaderboard feed + event-match guard + round-complete check
+    dataGolfField.ts         Field-updates fetch + event-id match guard, for the twice-daily field auto-pull
     mockGolfDataProvider.ts  In-memory stand-in
   jobs/
     notifications.ts         runNotificationSweep — reminders, Hearn resolution, picks digest, TOCC picks announcement
     resultsPull.ts           runResultsPullSweep — auto-pulls real DataGolf results ~4 days after a tournament starts
     toccLive.ts              runTOCCLiveSweep — TOCC round-by-round live standings emails (needs a live fetch, so it's not in notifications.ts)
+    fieldUpdate.ts           runFieldUpdateSweep — twice-daily field auto-pull + withdrawal alerts (participant + admin)
   scripts/verify-datagolf.mjs  (repo root) Confirms money vs points on your plan
   store/
     store.ts                 LeagueData shape + season-scoped read helpers
@@ -260,7 +283,7 @@ one) — comments rot, tests fail loudly when they do.
 | `ADMIN_HOST` | `0.0.0.0` | Bind address (LAN/internet-visible by default) |
 | `SESSION_SECRET` | *(random, regenerated each restart)* | Signs session cookies — set a fixed one in production, or every restart logs everyone out |
 | `GMAIL_STATE_DIR` | *(unset — emails are logged, not sent)* | Where the shared `google-oauth.json`/`google-token.json` live; see below |
-| `DATAGOLF_API_KEY` | *(unset — pickers show names with no odds, and the results-pull/TOCC-live sweeps don't run at all)* | Used by the verify script, the schedule/field seed script, live win odds, recent-form, the results auto-pull sweep, and the TOCC live-standings sweep |
+| `DATAGOLF_API_KEY` | *(unset — pickers show names with no odds, and the results-pull/TOCC-live/field-update sweeps don't run at all)* | Used by the verify script, the schedule seed script, live win odds, recent-form, the results auto-pull sweep, the TOCC live-standings sweep, and the twice-daily field auto-pull + withdrawal-alert sweep |
 | `APP_BASE_URL` | `http://localhost:<ADMIN_PORT>` | Base URL used in links inside notification emails (pick reminders, password links). Set to your LAN/public address in production — the app logs a warning at startup if unset |
 | `NOTIFICATION_SWEEP_MINUTES` | `15` | How often the background sweep runs (reminders, digests, results pull, TOCC live standings) — see `src/index.ts` and [docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md) |
 | `NODE_ENV` | — | Set to `production` to mark session cookies `Secure` (requires HTTPS) |
@@ -357,9 +380,12 @@ functions:
 - `runNotificationSweep` (`src/jobs/notifications.ts`) — always runs.
   Reminders, Hearn fallback resolution, the picks digest, the TOCC picks
   announcement.
-- `runResultsPullSweep` (`src/jobs/resultsPull.ts`) and `runTOCCLiveSweep`
-  (`src/jobs/toccLive.ts`) — only run when `DATAGOLF_API_KEY` is set, since
-  both need a live DataGolf call.
+- `runResultsPullSweep` (`src/jobs/resultsPull.ts`), `runTOCCLiveSweep`
+  (`src/jobs/toccLive.ts`), and `runFieldUpdateSweep`
+  (`src/jobs/fieldUpdate.ts`) — only run when `DATAGOLF_API_KEY` is set,
+  since all three need a live DataGolf call. `runFieldUpdateSweep` self-
+  throttles to at most once every 12h per tournament on top of that, so it's
+  a no-op on most ticks even when the key is set.
 
 Each is idempotent and self-healing by design: they recompute "what's due"
 from stored data (`data.notifications` as a dedupe log, see below) every

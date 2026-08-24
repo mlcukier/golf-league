@@ -1,5 +1,6 @@
 import { JsonLeagueStore } from "./store/jsonStore.js";
 import { createSendMail, startAdminServer } from "./admin/server.js";
+import { runFieldUpdateSweep } from "./jobs/fieldUpdate.js";
 import { runNotificationSweep } from "./jobs/notifications.js";
 import { runResultsPullSweep } from "./jobs/resultsPull.js";
 import { runTOCCLiveSweep } from "./jobs/toccLive.js";
@@ -10,11 +11,13 @@ import { runTOCCLiveSweep } from "./jobs/toccLive.js";
  * sweep for time-based work — pick reminders, Hearn fallback resolution, the
  * post-deadline picks digest and TOCC-only picks announcement
  * (jobs/notifications.ts), auto-pulling real results from DataGolf once a
- * tournament's finished (jobs/resultsPull.ts), and the TOCC round-by-round
- * live standings emails (jobs/toccLive.ts). The results digest itself is
- * event-driven, not scheduled — it fires directly off applyResults in
- * admin/server.ts, whether results arrived via that auto-pull or an admin's
- * manual paste.
+ * tournament's finished (jobs/resultsPull.ts), the TOCC round-by-round
+ * live standings emails (jobs/toccLive.ts), and auto-pulling each week's
+ * confirmed field twice a day plus alerting anyone (and every admin) whose
+ * pick just got withdrawn from it (jobs/fieldUpdate.ts). The results digest
+ * itself is event-driven, not scheduled — it fires directly off applyResults
+ * in admin/server.ts, whether results arrived via that auto-pull or an
+ * admin's manual paste.
  *
  *   LEAGUE_DB=./data/league.json ADMIN_PORT=8080 SESSION_SECRET=pick-a-secret \
  *     GMAIL_STATE_DIR=~/.clawdbot-gmail-worker DATAGOLF_API_KEY=xxxx \
@@ -48,6 +51,7 @@ const sweep = () => {
   if (dataGolfApiKey) {
     void runResultsPullSweep(store, sendMail, dataGolfApiKey).catch((err) => console.error("Results pull sweep failed:", err));
     void runTOCCLiveSweep(store, sendMail, dataGolfApiKey).catch((err) => console.error("TOCC live sweep failed:", err));
+    void runFieldUpdateSweep(store, sendMail, appUrl, dataGolfApiKey).catch((err) => console.error("Field update sweep failed:", err));
   }
 };
 sweep();

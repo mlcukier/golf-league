@@ -82,21 +82,27 @@ export interface Participant {
  * record per tournament (a single broadcast email); PICK_REMINDER is one
  * record per participant, since each non-picker is nudged individually;
  * TOCC_ROUND_UPDATE is one record per (tournament, round) — up to 4 per
- * tournament, one per completed round of play.
+ * tournament, one per completed round of play; FIELD_WITHDRAWAL is one
+ * record per (tournament, participant, golfer) — a participant could
+ * conceivably be hit twice in one week if their replacement pick also gets
+ * withdrawn.
  */
 export type NotificationType =
   | "PICK_REMINDER"
   | "PICKS_DIGEST"
   | "TOCC_PICKS_ANNOUNCEMENT"
-  | "TOCC_ROUND_UPDATE";
+  | "TOCC_ROUND_UPDATE"
+  | "FIELD_WITHDRAWAL";
 
 export interface NotificationRecord {
   type: NotificationType;
   tournamentId: string;
-  /** Set only for PICK_REMINDER. */
+  /** Set only for PICK_REMINDER and FIELD_WITHDRAWAL. */
   participantId?: string;
   /** Set only for TOCC_ROUND_UPDATE: which round (1-4) this update covered. */
   round?: number;
+  /** Set only for FIELD_WITHDRAWAL: the golfer who was withdrawn from the field. */
+  golferId?: string;
   sentAt: string; // ISO datetime
 }
 
@@ -133,6 +139,8 @@ export interface Tournament {
   isSeasonFinale: boolean;
   /** External id from the golf data provider (DataGolf event id). */
   externalEventId?: string;
+  /** ISO datetime of the last automated field-updates check (src/jobs/fieldUpdate.ts). Unset until the first check runs. */
+  fieldLastCheckedAt?: string;
 }
 
 export interface Golfer {

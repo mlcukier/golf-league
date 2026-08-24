@@ -177,6 +177,84 @@ export function renderPickReminderEmail(
   return { subject, bodyText, bodyHtml };
 }
 
+/**
+ * Sent to a participant whose current pick's golfer just dropped out of the
+ * field (WD, injury, etc.), per src/jobs/fieldUpdate.ts. Copy differs
+ * depending on whether the deadline has already passed: before it, they can
+ * still fix this themselves; after it, only an admin override can.
+ */
+export function renderFieldWithdrawalEmail(
+  golferName: string,
+  tournamentName: string,
+  deadline: string,
+  appUrl: string,
+  deadlinePassed: boolean
+): { subject: string; bodyText: string; bodyHtml: string } {
+  const subject = `${golferName} is out of the field — ${tournamentName}`;
+  const deadlineStr = new Date(deadline).toLocaleString();
+
+  if (deadlinePassed) {
+    const bodyText =
+      `Your pick for ${tournamentName}, ${golferName}, is no longer in the confirmed field — ` +
+      `and the pick deadline (${deadlineStr}) has already passed, so you can't submit a new one ` +
+      `yourself. The league admin has been notified and can override the deadline if needed.`;
+    const contentHtml =
+      paragraphHtml(`Your pick for ${tournamentName}, ${golferName}, is no longer in the confirmed field.`) +
+      paragraphHtml(
+        `The pick deadline (${deadlineStr}) has already passed, so you can't submit a new pick yourself. The league admin has been notified and can override the deadline if needed.`,
+        MUTED
+      );
+    return { subject, bodyText, bodyHtml: emailShell(subject, contentHtml) };
+  }
+
+  const bodyText =
+    `Your pick for ${tournamentName}, ${golferName}, is no longer in the confirmed field. ` +
+    `Submit a new pick before the deadline: ${deadlineStr}.\n\nPick here: ${appUrl}`;
+  const contentHtml =
+    paragraphHtml(`Your pick for ${tournamentName}, ${golferName}, is no longer in the confirmed field.`) +
+    paragraphHtml(`Submit a new pick before the deadline: ${deadlineStr}.`, MUTED) +
+    `<p style="margin:0;">${buttonHtml("Change your pick", appUrl)}</p>`;
+  return { subject, bodyText, bodyHtml: emailShell(subject, contentHtml) };
+}
+
+export interface FieldWithdrawalAdminRow {
+  participantName: string;
+  golferName: string;
+}
+
+/** Sent to admins alongside the participant email(s) above, one summary per tournament per sweep tick that finds new withdrawals. */
+export function renderFieldWithdrawalAdminEmail(
+  tournamentName: string,
+  rows: FieldWithdrawalAdminRow[],
+  deadline: string,
+  deadlinePassed: boolean
+): { subject: string; bodyText: string; bodyHtml: string } {
+  const subject = `Field update — ${tournamentName}: ${rows.length} pick${rows.length === 1 ? "" : "s"} affected`;
+  const lines = rows.map((r) => `${r.participantName}: ${r.golferName} withdrew`);
+  const statusLine = deadlinePassed
+    ? "The pick deadline has already passed — affected participants can't self-serve a new pick, only an admin override will fix this."
+    : "Affected participants have been emailed and can still submit a new pick before the deadline.";
+  const bodyText = [subject, "", ...lines, "", statusLine].join("\n");
+
+  const tableRows = rows
+    .map(
+      (r) => `<tr>
+        <td style="padding:9px 8px;border-bottom:1px solid ${BORDER};font-size:14px;">${escHtml(r.participantName)}</td>
+        <td style="padding:9px 8px;border-bottom:1px solid ${BORDER};font-size:14px;">${escHtml(r.golferName)}</td>
+      </tr>`
+    )
+    .join("");
+  const contentHtml =
+    `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin-bottom:16px;">
+    <tr style="text-align:left;">
+      <th style="padding:6px 8px;border-bottom:1px solid ${BORDER};font-size:11px;text-transform:uppercase;letter-spacing:.03em;color:${MUTED};">Participant</th>
+      <th style="padding:6px 8px;border-bottom:1px solid ${BORDER};font-size:11px;text-transform:uppercase;letter-spacing:.03em;color:${MUTED};">Golfer withdrawn</th>
+    </tr>
+    ${tableRows}
+  </table>` + paragraphHtml(statusLine, deadlinePassed ? ALERT : MUTED);
+  return { subject, bodyText, bodyHtml: emailShell(subject, contentHtml) };
+}
+
 export interface PicksDigestRow {
   name: string;
   golferName: string | null;
