@@ -23,11 +23,23 @@
  * backfills real results. Set DATAGOLF_INCLUDE_COMPLETED=1 to seed the full
  * year anyway (e.g. to backfill history with real results afterward).
  *
+ * By default the seed stops at the 2nd FedEx Cup playoff event (BMW
+ * Championship) — fine for seeding a brand-new full season up front, but it
+ * means re-running this later in the year (e.g. to add Fall Series events to
+ * an already-active "mini" season) finds nothing: every event through BMW
+ * is already completed by then, so the upcoming-only filter yields zero and
+ * the script fails with "no upcoming events left". Set
+ * DATAGOLF_SKIP_FINALE=1 to skip the BMW cutoff entirely and seed every
+ * remaining upcoming event for the year instead (no isSeasonFinale is set
+ * in this mode). Safe to re-run either way — existing tournaments in the
+ * season (matched by externalEventId) are skipped rather than duplicated.
+ *
  * Usage:
  *   DATAGOLF_API_KEY=xxx GOLF_APP_EMAIL=you@example.com GOLF_APP_PASSWORD=xxx \
  *     node scripts/seed-schedule.mjs <seasonId> <year>
  *
- * Optional env: GOLF_APP_URL (default http://localhost:8080), DATAGOLF_TOUR (default pga).
+ * Optional env: GOLF_APP_URL (default http://localhost:8080), DATAGOLF_TOUR (default pga),
+ * DATAGOLF_SKIP_FINALE (default unset — see above).
  */
 
 const [, , seasonId, yearArg] = process.argv;
@@ -85,10 +97,19 @@ async function createTournament(cookie, body) {
   return data;
 }
 
+/** externalEventIds already present in this season, so re-running the seed never duplicates a tournament. */
+async function existingExternalEventIds(cookie, seasonId) {
+  const res = await fetch(`${appUrl}/api/seasons/${seasonId}/report`, { headers: { cookie } });
+  if (!res.ok) fail(`Failed to load season ${seasonId}: ${res.status} ${res.statusText}`);
+  const data = await res.json();
+  return new Set((data.tournaments ?? []).map((t) => t.externalEventId).filter(Boolean));
+}
+
 const FINALE_NAME_HINT = "bmw championship";
 
 async function main() {
   const includeCompleted = process.env.DATAGOLF_INCLUDE_COMPLETED === "1";
+  const skipFinale = process.env.DATAGOLF_SKIP_FINALE === "1";
 
   // Finale detection runs against the FULL year's schedule, before the
   // upcoming-only filter below, so it still works even if the finale itself
@@ -98,32 +119,48 @@ async function main() {
     .sort((a, b) => new Date(a.start_date) - new Date(b.start_date) || a.event_id - b.event_id);
   if (fullYear.length === 0) fail(`No ${tour} events found for ${year}.`);
 
-  const finaleIndex = fullYear.findIndex((e) => String(e.event_name).toLowerCase().includes(FINALE_NAME_HINT));
-  if (finaleIndex < 0) {
-    console.warn(
-      `Couldn't spot the 2nd FedEx Cup playoff event by name — seeding without a finale set. Mark one as the finale in the Schedule tab.`
+  let inSeasonFull, finaleEventId;
+  if (skipFinale) {
+    inSeasonFull = fullYear;
+    finaleEventId = null;
+  } else {
+    const finaleIndex = fullYear.findIndex((e) => String(e.event_name).toLowerCase().includes(FINALE_NAME_HINT));
+    if (finaleIndex < 0) {
+      console.warn(
+        `Couldn't spot the 2nd FedEx Cup playoff event by name — seeding without a finale set. Mark one as the finale in the Schedule tab.`
+      );
+    }
+    finaleEventId = finaleIndex >= 0 ? fullYear[finaleIndex].event_id : null;
+    inSeasonFull = finaleIndex >= 0 ? fullYear.slice(0, finaleIndex + 1) : fullYear;
+  }
+
+  const upcoming = inSeasonFull.filter((e) => includeCompleted || e.status !== "completed");
+  if (upcoming.length === 0) {
+    fail(
+      `No upcoming ${tour} events left for ${year}${skipFinale ? "" : " through the season finale"}. ` +
+        "Set DATAGOLF_INCLUDE_COMPLETED=1 to include already-played events, or DATAGOLF_SKIP_FINALE=1 " +
+        "to look past the BMW Championship cutoff for later-season events."
     );
   }
-  const finaleEventId = finaleIndex >= 0 ? fullYear[finaleIndex].event_id : null;
-  const inSeasonFull = finaleIndex >= 0 ? fullYear.slice(0, finaleIndex + 1) : fullYear;
 
-  const events = inSeasonFull.filter((e) => includeCompleted || e.status !== "completed");
+  const cookie = await login();
+  const already = await existingExternalEventIds(cookie, seasonId);
+  const events = upcoming.filter((e) => !already.has(String(e.event_id)));
+  const skipped = upcoming.length - events.length;
+  if (skipped > 0) console.log(`Skipping ${skipped} event(s) already in this season.`);
   if (events.length === 0) {
-    fail(
-      `No upcoming ${tour} events left for ${year} (the rest of the season is already played). ` +
-        "Set DATAGOLF_INCLUDE_COMPLETED=1 to include already-played events."
-    );
+    console.log("Nothing new to seed — every matching event is already in this season.");
+    return;
   }
 
   console.log(`Seeding ${events.length} tournaments into season ${seasonId}...`);
-  const cookie = await login();
 
   for (const [i, e] of events.entries()) {
     const isSeasonFinale = e.event_id === finaleEventId;
     const tournament = await createTournament(cookie, {
       seasonId,
       name: e.event_name,
-      sequence: i + 1,
+      sequence: already.size + i + 1,
       startTime: `${e.start_date}T10:00:00.000Z`,
       isSeasonFinale,
       externalEventId: String(e.event_id),
