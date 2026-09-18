@@ -188,7 +188,17 @@ Defaults to events DataGolf still marks "upcoming" — already-played events
 have no pick to make and would sit there with no results forever, which (per
 `core/emailRouting.ts`) blocks every participant's pick target until someone
 backfills real results. Set `DATAGOLF_INCLUDE_COMPLETED=1` to seed the whole
-year anyway. Pick deadlines default to 10:00 UTC on each start date (DataGolf
+year anyway. Safe to re-run against a season that already has tournaments —
+existing ones (matched by `externalEventId`) are skipped, not duplicated.
+
+The BMW Championship cutoff means re-running this **later** in the year finds
+nothing by default — by then every event through BMW is already completed,
+so the upcoming-only filter is empty. Set `DATAGOLF_SKIP_FINALE=1` to skip
+that cutoff and seed whatever's still upcoming for the year regardless of the
+finale, e.g. to add Fall Series events to an already-active mini/side season
+after the real FedEx Cup season has wrapped.
+
+Pick deadlines default to 10:00 UTC on each start date (DataGolf
 gives no tee time) — adjust in the Schedule tab if precision matters. The
 field itself is auto-pulled once a tournament becomes the currently-open one
 (see "Field withdrawal alerts" below) — no manual step needed unless you want
@@ -289,8 +299,8 @@ one) — comments rot, tests fail loudly when they do.
 | `NODE_ENV` | — | Set to `production` to mark session cookies `Secure` (requires HTTPS) |
 
 `scripts/seed-schedule.mjs` also reads `DATAGOLF_TOUR` (default `pga`),
-`GOLF_APP_URL`, `GOLF_APP_EMAIL`, `GOLF_APP_PASSWORD`, and
-`DATAGOLF_INCLUDE_COMPLETED` — script-only, not read by the running app.
+`GOLF_APP_URL`, `GOLF_APP_EMAIL`, `GOLF_APP_PASSWORD`, `DATAGOLF_INCLUDE_COMPLETED`,
+and `DATAGOLF_SKIP_FINALE` — script-only, not read by the running app.
 
 ## Auth
 
@@ -354,6 +364,22 @@ misspelled golfer names. They're deliberately sourced differently, though:
 Either way, an existing Hearn entry (or pick) whose golfer has since dropped
 out of the relevant pool stays selectable in its dropdown instead of quietly
 disappearing on the next save.
+
+**A participant's Hearn list locks once a tournament they haven't picked
+starts, until Hearn resolution has actually been attempted for them.**
+Without this, a participant with no pick could watch the tournament start,
+see who's playing well, and edit their Hearn list before the sweep resolves
+them — turning the "I forgot to pick" fallback into a way to submit an
+informed pick after the deadline. Resolution is attempted once per
+(tournament, participant) and recorded (`HEARN_RESOLVED` in
+`data.notifications`, reused as a dedupe log here — not an email) even when
+the list is exhausted and yields nothing, so the lock lifts the instant an
+attempt happens, win or lose, rather than staying frozen while unrelated
+future weeks are being planned. `hearnListLockStatus` (`src/core/hearn.ts`)
+is the check; `PUT /api/my/hearn` is the only route it applies to — the
+admin's per-participant Hearn edit route is untouched, same as the admin's
+pick-deadline override, both trusted tools rather than participant-facing
+loopholes.
 
 Each option shows DataGolf's live win odds when available via
 `src/providers/dataGolfOdds.ts`, which caches `preds/pre-tournament` for 10

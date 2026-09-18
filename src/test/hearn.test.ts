@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { applyHearnFallbacks, findDeadHearnEntries, resolveHearnPick } from "../core/hearn.js";
+import {
+  applyHearnFallbacks,
+  findDeadHearnEntries,
+  hearnListLockStatus,
+  resolveHearnPick,
+} from "../core/hearn.js";
 import { usedGolferIds } from "../core/oneAndDone.js";
-import { hearn, pick, SEASON_ID } from "./fixtures.js";
+import { hearn, pick, SEASON_ID, tournament } from "./fixtures.js";
 
 const FIELD = new Set(["g1", "g2", "g3", "g4"]);
 
@@ -164,6 +169,91 @@ describe("applyHearnFallbacks", () => {
     // Four usable golfers means four assigned weeks, then nothing — never a repeat.
     expect(picks.map((p) => p.golferId)).toEqual(["g1", "g2", "g3", "g4"]);
     expect(usedGolferIds("p1", SEASON_ID, picks).size).toBe(picks.length);
+  });
+
+  it("never re-attempts a participant already marked as attempted, even with no pick", () => {
+    // p1's list was exhausted on a prior sweep tick (recorded as attempted).
+    // A fresh golfer added to their list afterward must not retroactively
+    // resolve them — that's the live-viewing loophole this guards against.
+    const out = applyHearnFallbacks({
+      seasonId: SEASON_ID,
+      tournamentId: "t5",
+      participantIds: ["p1"],
+      hearnLists: [hearn("p1", "g1", 1)],
+      existingPicks: [],
+      tournamentField: FIELD,
+      assignedAt: "2026-02-05T13:00:00Z",
+      alreadyAttemptedParticipantIds: new Set(["p1"]),
+    });
+    expect(out.picks).toEqual([]);
+    expect(out.resolutions).toEqual([]);
+    expect(out.unresolved).toEqual([]);
+  });
+});
+
+describe("hearnListLockStatus", () => {
+  const t1 = tournament("t1", 1); // starts 2026-01-08T08:00:00Z
+  const t2 = tournament("t2", 2); // starts 2026-01-15T08:00:00Z
+
+  it("is unlocked before any tournament has started", () => {
+    const status = hearnListLockStatus({
+      seasonId: SEASON_ID,
+      participantId: "p1",
+      tournaments: [t1, t2],
+      existingPicks: [],
+      attemptedTournamentIds: new Set(),
+      now: new Date("2026-01-01T00:00:00Z"),
+    });
+    expect(status.locked).toBe(false);
+  });
+
+  it("locks once a tournament starts with no pick and no resolution attempt yet", () => {
+    const status = hearnListLockStatus({
+      seasonId: SEASON_ID,
+      participantId: "p1",
+      tournaments: [t1, t2],
+      existingPicks: [],
+      attemptedTournamentIds: new Set(),
+      now: new Date("2026-01-08T09:00:00Z"), // an hour after t1 started
+    });
+    expect(status.locked).toBe(true);
+    expect(status.tournamentId).toBe("t1");
+  });
+
+  it("stays unlocked if the participant already has a pick for the started tournament", () => {
+    const status = hearnListLockStatus({
+      seasonId: SEASON_ID,
+      participantId: "p1",
+      tournaments: [t1],
+      existingPicks: [pick("p1", "t1", "g1")],
+      attemptedTournamentIds: new Set(),
+      now: new Date("2026-01-08T09:00:00Z"),
+    });
+    expect(status.locked).toBe(false);
+  });
+
+  it("unlocks once resolution has been attempted, even with no pick to show for it", () => {
+    const status = hearnListLockStatus({
+      seasonId: SEASON_ID,
+      participantId: "p1",
+      tournaments: [t1],
+      existingPicks: [], // exhausted Hearn list -> permanent zero, still no Pick record
+      attemptedTournamentIds: new Set(["t1"]),
+      now: new Date("2026-01-08T09:00:00Z"),
+    });
+    expect(status.locked).toBe(false);
+  });
+
+  it("locks on the checked participant's own pick, unaffected by a teammate's pick", () => {
+    const status = hearnListLockStatus({
+      seasonId: SEASON_ID,
+      participantId: "p1",
+      tournaments: [t1],
+      existingPicks: [pick("p2", "t1", "g1")], // p1 still has no pick, but check is for p1
+      attemptedTournamentIds: new Set(),
+      now: new Date("2026-01-08T09:00:00Z"),
+    });
+    expect(status.locked).toBe(true);
   });
 });
 

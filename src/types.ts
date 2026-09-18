@@ -85,23 +85,28 @@ export interface Participant {
  * tournament, one per completed round of play; FIELD_WITHDRAWAL is one
  * record per (tournament, participant, golfer) — a participant could
  * conceivably be hit twice in one week if their replacement pick also gets
- * withdrawn.
+ * withdrawn. HEARN_RESOLVED isn't an email at all — it's one record per
+ * (tournament, participant) marking that Hearn fallback resolution was
+ * attempted for them, win or lose (see hearnListLockStatus in
+ * core/hearn.ts), reusing this same dedupe log because the "only once"
+ * semantics are identical.
  */
 export type NotificationType =
   | "PICK_REMINDER"
   | "PICKS_DIGEST"
   | "TOCC_PICKS_ANNOUNCEMENT"
   | "TOCC_ROUND_UPDATE"
-  | "FIELD_WITHDRAWAL";
+  | "FIELD_WITHDRAWAL"
+  | "HEARN_RESOLVED";
 
 export interface NotificationRecord {
   type: NotificationType;
   tournamentId: string;
-  /** Set only for PICK_REMINDER and FIELD_WITHDRAWAL. */
+  /** Set only for PICK_REMINDER, FIELD_WITHDRAWAL, and HEARN_RESOLVED. */
   participantId?: string;
   /** Set only for TOCC_ROUND_UPDATE: which round (1-4) this update covered. */
   round?: number;
-  /** Set only for FIELD_WITHDRAWAL: the golfer who was withdrawn from the field. */
+  /** Set for FIELD_WITHDRAWAL (the golfer withdrawn) and, when resolution succeeded, HEARN_RESOLVED. Absent on a HEARN_RESOLVED record when the participant's list was exhausted. */
   golferId?: string;
   sentAt: string; // ISO datetime
 }

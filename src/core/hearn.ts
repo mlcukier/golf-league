@@ -88,6 +88,18 @@ export interface ApplyHearnFallbacksInput {
   tournamentField: Set<string>;
   /** Timestamp recorded on generated picks (normally the tournament start time). */
   assignedAt: string;
+  /**
+   * Participants already run through resolution for this tournament, on a
+   * prior sweep tick — skipped even if that attempt came back null. Without
+   * this, a participant whose list was exhausted stays "unresolved" forever
+   * and every future sweep tick tries again with whatever their Hearn list
+   * looks like *then* — which is exactly the loophole this guards against:
+   * watch the tournament live, edit your list, get an informed pick in
+   * through the "forgot to pick" fallback. See hearnListLockStatus below,
+   * which uses the same one-attempt-ever record to freeze list edits until
+   * that attempt happens.
+   */
+  alreadyAttemptedParticipantIds?: Set<string>;
 }
 
 export interface ApplyHearnFallbacksResult {
@@ -123,6 +135,7 @@ export function applyHearnFallbacks(
         p.tournamentId === input.tournamentId
     );
     if (alreadyPicked) continue;
+    if (input.alreadyAttemptedParticipantIds?.has(participantId)) continue;
 
     const resolution = resolveHearnPick({
       participantId,
@@ -167,4 +180,55 @@ export function findDeadHearnEntries(
   return hearnLists
     .filter((h) => h.seasonId === seasonId)
     .filter((h) => usedGolferIds(h.participantId, seasonId, picks).has(h.golferId));
+}
+
+export interface HearnListLockCheck {
+  seasonId: string;
+  participantId: string;
+  /** Every tournament in the participant's season. */
+  tournaments: { id: string; startTime: string }[];
+  existingPicks: Pick[];
+  /**
+   * Tournament ids where Hearn resolution has already been attempted for
+   * this participant (see alreadyAttemptedParticipantIds on
+   * ApplyHearnFallbacksInput) — regardless of outcome.
+   */
+  attemptedTournamentIds: Set<string>;
+  now: Date;
+}
+
+export interface HearnListLockResult {
+  locked: boolean;
+  /** The tournament forcing the lock, when locked. */
+  tournamentId?: string;
+}
+
+/**
+ * A participant's Hearn list is the fallback for "I forgot to pick", not a
+ * second chance to pick once the tournament is underway — so it must stay
+ * frozen from the moment a tournament's deadline passes until Hearn
+ * resolution has actually been attempted for that participant. Without
+ * this, someone with no pick could watch the tournament start, see who's
+ * playing well, and edit their list before the next sweep tick resolves
+ * them, turning the "forgot to pick" safety net into a way to submit an
+ * informed pick after the deadline.
+ *
+ * The lock lifts the instant resolution is attempted, success or not — a
+ * genuinely exhausted list is a real zero for that week (see
+ * applyHearnFallbacks), not a reason to keep blocking edits meant to
+ * prepare for future weeks.
+ */
+export function hearnListLockStatus(input: HearnListLockCheck): HearnListLockResult {
+  const pickedTournamentIds = new Set(
+    input.existingPicks
+      .filter((p) => p.participantId === input.participantId && p.seasonId === input.seasonId)
+      .map((p) => p.tournamentId)
+  );
+  const blocking = input.tournaments.find(
+    (t) =>
+      new Date(t.startTime).getTime() <= input.now.getTime() &&
+      !pickedTournamentIds.has(t.id) &&
+      !input.attemptedTournamentIds.has(t.id)
+  );
+  return blocking ? { locked: true, tournamentId: blocking.id } : { locked: false };
 }

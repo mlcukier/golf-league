@@ -16,7 +16,7 @@ import {
 import { buildSeasonReport } from "../core/report.js";
 import { computeGolferAvailability, getAvailability } from "../core/availability.js";
 import { blockingReasons, validatePick } from "../core/oneAndDone.js";
-import { applyHearnFallbacks, findDeadHearnEntries } from "../core/hearn.js";
+import { applyHearnFallbacks, findDeadHearnEntries, hearnListLockStatus } from "../core/hearn.js";
 import { createSeason, createTestLeague, startNewSeason } from "../core/season.js";
 import { openTournament, resolveActiveSeasonForParticipant } from "../core/emailRouting.js";
 import { buildTOCCLiveStandings, estimateTOCCWeekFromLive } from "../core/toccLive.js";
@@ -481,6 +481,30 @@ const routes: Route[] = [
       const lookup = resolveActiveSeasonForParticipant(data, me!.email);
       if (!lookup.ok || !lookup.season) throw new HttpError(400, describeLookupFailure(lookup.failure));
       const seasonId = lookup.season.id;
+
+      // Frozen while a started tournament's Hearn resolution is still
+      // pending, so a forgotten pick can't be turned into an informed one by
+      // editing the fallback list after watching live play — see
+      // hearnListLockStatus's doc comment.
+      const lock = hearnListLockStatus({
+        seasonId,
+        participantId: me!.id,
+        tournaments: seasonTournaments(data, seasonId),
+        existingPicks: data.picks,
+        attemptedTournamentIds: new Set(
+          data.notifications
+            .filter((n) => n.type === "HEARN_RESOLVED" && n.participantId === me!.id)
+            .map((n) => n.tournamentId)
+        ),
+        now: new Date(),
+      });
+      if (lock.locked) {
+        throw new HttpError(
+          400,
+          "Your Hearn list is locked — a tournament you have no pick for has already started. It'll unlock once that pick is resolved."
+        );
+      }
+
       const names = (body.golferNames as string[]) ?? [];
 
       await store.update((d) => {

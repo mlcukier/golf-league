@@ -169,6 +169,11 @@ export async function runNotificationSweep(store: LeagueStore, sendMail: SendMai
   }
 
   for (const { season, tournament } of findTournamentsNeedingHearnResolution(data, now)) {
+    const alreadyAttempted = new Set(
+      data.notifications
+        .filter((n) => n.type === "HEARN_RESOLVED" && n.tournamentId === tournament.id)
+        .map((n) => n.participantId!)
+    );
     const result = applyHearnFallbacks({
       seasonId: season.id,
       tournamentId: tournament.id,
@@ -177,10 +182,20 @@ export async function runNotificationSweep(store: LeagueStore, sendMail: SendMai
       existingPicks: data.picks,
       tournamentField: tournamentField(data, tournament.id),
       assignedAt: tournament.startTime,
+      alreadyAttemptedParticipantIds: alreadyAttempted,
     });
-    if (result.picks.length > 0) {
+    if (result.resolutions.length > 0) {
       data = await store.update((d) => {
         d.picks.push(...result.picks);
+        for (const resolution of result.resolutions) {
+          d.notifications.push({
+            type: "HEARN_RESOLVED",
+            tournamentId: tournament.id,
+            participantId: resolution.participantId,
+            golferId: resolution.golferId ?? undefined,
+            sentAt: now.toISOString(),
+          });
+        }
       });
     }
   }
