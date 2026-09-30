@@ -330,11 +330,30 @@ scale, worth revisiting if that changes.
 ## Picks and Hearn Picks
 
 `openTournament` (`src/core/emailRouting.ts`) decides which tournament is
-currently open, league-wide: the earliest one in a season with no posted
-results yet. Deliberately clock- and participant-independent — a tournament
-only closes once its results are in, not once its deadline passes, and it's
-the same "current" week for everyone rather than tracked per participant.
-Two things that fell out of that:
+currently open, league-wide: the earliest one in a season that has no posted
+results yet **and** hasn't already finished being played. Participant-independent
+by design — it's the same "current" week for everyone rather than tracked per
+participant.
+
+The second clause is not "the deadline passed". It's start time plus four
+days (`EVENT_COMPLETION_BUFFER_MS`, shared with `jobs/resultsPull.ts`, which
+uses the same boundary to decide when to ask DataGolf for a leaderboard), so
+a tournament stays current for the whole time it's actually being played and
+a pick submitted just after the deadline still lands on it and is still
+rejected as late, rather than silently retargeting next week.
+
+Results alone used to be the only exit condition, which made the entire
+league hostage to a result that might never arrive. The 2026 Presidents Cup
+proved the point: a team exhibition with no prize money that DataGolf doesn't
+carry in the PGA calendar at all, so its results pull 400s forever. It pinned
+`openTournament` permanently — participants were shown a pick due for an event
+that had ended days before, and the field auto-pull (which only ever looks at
+the open tournament) never advanced to the next event, leaving it a day from
+its deadline with an empty field. A week skipped this way is skipped for
+display and targeting only: it keeps its picks, still owes the Greller its
+ante, and still scores normally if results are posted later.
+
+Three things that fall out of this:
 
 - **Changing a pick** just works: `POST /api/my/pick` always takes an
   explicit `tournamentId` and replaces any existing pick for that week
@@ -343,9 +362,13 @@ Two things that fell out of that:
   still enforces the real deadline against the tournament actually named, so
   a stale page can't sneak a late pick through.
 - A participant who misses a week with no valid Hearn fallback (see
-  `hearn.ts` — it never invents a pick) doesn't get stuck: once that week's
-  results are posted, `openTournament` moves on for everyone regardless of
-  whether they ever had a pick recorded for it.
+  `hearn.ts` — it never invents a pick) doesn't get stuck: once that week is
+  over, `openTournament` moves on for everyone regardless of whether they
+  ever had a pick recorded for it.
+- A week that never gets results doesn't stall the season. It drops out of
+  the picker four days after it starts whether or not a leaderboard ever
+  shows up, so one unscorable event can't hold the schedule (or the field
+  auto-pull) behind it.
 
 Both the weekly pick (**My Picks** tab) and the season-long fallback list
 (**Hearn Picks** tab) are `<select>` dropdowns, not free text — no more
