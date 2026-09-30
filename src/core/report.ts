@@ -58,8 +58,13 @@ export interface SeasonReport {
  * Computes every standing and pot balance for a season in one pass. This is
  * the single source of truth behind the admin dashboard, the STANDINGS/POTS
  * email replies, and the weekly digest, so all three can never disagree.
+ *
+ * `now` only feeds `openTournament` (which week is current, for the Greller
+ * ante cutoff below); every other figure here is derived purely from stored
+ * picks and results. It's injectable so tests can pin a season's "today"
+ * rather than depending on the wall clock at the moment they run.
  */
-export function buildSeasonReport(data: LeagueData, season: Season): SeasonReport {
+export function buildSeasonReport(data: LeagueData, season: Season, now: Date = new Date()): SeasonReport {
   const tournaments = seasonTournaments(data, season.id);
   const picks = seasonPicks(data, season.id);
   const results = seasonResults(data, season.id);
@@ -79,7 +84,7 @@ export function buildSeasonReport(data: LeagueData, season: Season): SeasonRepor
   // reason to hide that week's contribution from the running pot. Only
   // weeks strictly after the current open one (not yet under way) are
   // excluded.
-  const open = openTournament(data, season.id);
+  const open = openTournament(data, season.id, now);
   const grellerTournaments = open ? tournaments.filter((t) => t.sequence <= open.sequence) : tournaments;
   const grellerHistory = computeGrellerHistory(
     grellerTournaments,

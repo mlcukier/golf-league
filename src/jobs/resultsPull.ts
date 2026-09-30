@@ -1,16 +1,20 @@
 import { applyResults, type SendMail } from "../admin/server.js";
+import { EVENT_COMPLETION_BUFFER_MS } from "../core/emailRouting.js";
 import { fetchDataGolfEventResults } from "../providers/dataGolfProvider.js";
 import type { LeagueStore } from "../store/store.js";
 
 /**
- * PGA events run Thursday through Sunday — roughly 3.5 days from a
- * tournament's stored startTime (Thursday tee time) to a final leaderboard.
- * This buffer is deliberately a bit conservative: being early just means an
- * empty event_stats response and a quiet retry next sweep, which costs
- * nothing, whereas a too-short buffer would mean repeated wasted calls
- * during the event.
+ * How long after a tournament's stored startTime (Thursday tee time) to wait
+ * before asking DataGolf for a final leaderboard. Shared with
+ * `core/emailRouting.ts`, which uses the same boundary to decide when a
+ * tournament stops being the league's currently-open one — see that
+ * constant's comment for why the two must stay identical.
+ *
+ * Being early just means an empty event_stats response and a quiet retry
+ * next sweep, which costs nothing, whereas a too-short buffer would mean
+ * repeated wasted calls during the event.
  */
-const COMPLETION_BUFFER_MS = 4 * 24 * 60 * 60 * 1000;
+const COMPLETION_BUFFER_MS = EVENT_COMPLETION_BUFFER_MS;
 
 /**
  * Auto-pulls real results from DataGolf for any tournament that has a

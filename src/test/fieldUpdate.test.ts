@@ -161,3 +161,46 @@ describe("runFieldUpdateSweep", () => {
     expect(sendMail).not.toHaveBeenCalled();
   });
 });
+
+describe("runFieldUpdateSweep past a dead tournament", () => {
+  // Regression: the 2026 Presidents Cup (a no-prize-money team exhibition
+  // DataGolf doesn't carry in the PGA calendar) sat as the open tournament
+  // forever because results never posted. The sweep re-checked that dead
+  // event on every run and never reached the Bank of Utah Championship, which
+  // started the following week with an empty field right up to its deadline.
+  it("advances to the next tournament once the resultless one has finished being played", async () => {
+    const dead = tournament("t-dead", 1, { externalEventId: "500" });
+    const next = tournament("t-next", 2, { externalEventId: "554" });
+    const store = new MemoryLeagueStore(baseData({ tournaments: [dead, next] }));
+    const sendMail = vi.fn().mockResolvedValue(undefined);
+
+    // Five days after the dead event started: it is over and will never have
+    // results; the next event has not started yet.
+    const now = new Date(new Date(dead.startTime).getTime() + 5 * 24 * 60 * 60 * 1000);
+    const fetchImpl = fakeFetch(fieldResponse(554, ["Scottie Scheffler", "Rory McIlroy"]));
+
+    await runFieldUpdateSweep(store, sendMail, "https://golf.test", "key", "pga", now, fetchImpl);
+
+    const after = await store.read();
+    expect(after.fields["t-next"]).toHaveLength(2);
+    expect(after.fields["t-dead"]).toBeUndefined();
+    expect(after.tournaments.find((t) => t.id === "t-next")!.fieldLastCheckedAt).toBe(now.toISOString());
+  });
+
+  it("still targets the in-progress tournament while it is being played", async () => {
+    const current = tournament("t-current", 1, { externalEventId: "554" });
+    const next = tournament("t-next", 2, { externalEventId: "527" });
+    const store = new MemoryLeagueStore(baseData({ tournaments: [current, next] }));
+    const sendMail = vi.fn().mockResolvedValue(undefined);
+
+    // One day in: still the open tournament, so its field is what gets pulled.
+    const now = new Date(new Date(current.startTime).getTime() + 24 * 60 * 60 * 1000);
+    const fetchImpl = fakeFetch(fieldResponse(554, ["Scottie Scheffler"]));
+
+    await runFieldUpdateSweep(store, sendMail, "https://golf.test", "key", "pga", now, fetchImpl);
+
+    const after = await store.read();
+    expect(after.fields["t-current"]).toHaveLength(1);
+    expect(after.fields["t-next"]).toBeUndefined();
+  });
+});

@@ -53,7 +53,7 @@ export async function runFieldUpdateSweep(
 
   const candidates: Tournament[] = [];
   for (const season of data.seasons.filter((s) => s.status === "ACTIVE")) {
-    const tournament = openTournament(data, season.id);
+    const tournament = openTournament(data, season.id, now);
     if (!tournament || !tournament.externalEventId) continue;
     const lastChecked = tournament.fieldLastCheckedAt ? new Date(tournament.fieldLastCheckedAt).getTime() : 0;
     if (now.getTime() - lastChecked < CHECK_INTERVAL_MS) continue;

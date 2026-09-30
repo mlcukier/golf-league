@@ -79,10 +79,18 @@ describe("createGolferFormCache", () => {
     const fetchImpl = fakeFetchImpl();
     const cache = createGolferFormCache("key", { fetchImpl, now: () => t, ttlMs: 1000 });
     await cache.get(28);
+    // The fetch count is the event list plus one call per completed event in
+    // the fixture, and which events count as completed depends on the real
+    // wall clock (see the comment in createGolferFormCache — event
+    // completeness deliberately ignores the injected TTL clock). So assert
+    // the property under test, that a second get inside the TTL adds no
+    // fetches at all, rather than a fixed total that silently goes stale as
+    // the fixture's dates recede into the past.
+    const afterFirst = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls.length;
+    expect(afterFirst).toBeGreaterThan(1);
     t = 500;
     await cache.get(28);
-    // event-list + 3 distinct events fetched once each = 4 calls total, not doubled.
-    expect((fetchImpl as ReturnType<typeof vi.fn>)).toHaveBeenCalledTimes(4);
+    expect((fetchImpl as ReturnType<typeof vi.fn>).mock.calls.length).toBe(afterFirst);
   });
 
   it("fetches fresh data for a different event id", async () => {

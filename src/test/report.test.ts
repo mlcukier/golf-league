@@ -39,13 +39,19 @@ function baseData(overrides: Partial<LeagueData> = {}): LeagueData {
   };
 }
 
+// Fixture event 1 starts 2026-01-08T08:00Z; this is mid-play that week, so
+// t1 is unambiguously the open tournament. Pinned rather than left to the
+// wall clock, which would silently change which weeks count as "opened" and
+// made these assertions depend on the date the suite happened to run.
+const DURING_T1 = new Date("2026-01-09T12:00:00Z");
+
 describe("buildSeasonReport — Greller", () => {
   it("shows the full roster's ante for the current week before any results are posted", () => {
     const data = baseData({
       tournaments: [tournament("t1", 1)],
       picks: [pick("p1", "t1", "g1"), pick("p2", "t1", "g2")], // p3 hasn't picked yet
     });
-    const report = buildSeasonReport(data, data.seasons[0]!);
+    const report = buildSeasonReport(data, data.seasons[0]!, DURING_T1);
     // 3 roster members * $10, regardless of who has actually submitted a pick.
     expect(report.greller.currentBalance).toBe(30);
     expect(report.greller.history).toHaveLength(1);
@@ -56,7 +62,7 @@ describe("buildSeasonReport — Greller", () => {
       tournaments: [tournament("t1", 1), tournament("t2", 2)],
       picks: [],
     });
-    const report = buildSeasonReport(data, data.seasons[0]!);
+    const report = buildSeasonReport(data, data.seasons[0]!, DURING_T1);
     expect(report.greller.history).toHaveLength(1); // only t1, the open one
     expect(report.greller.currentBalance).toBe(30);
   });
@@ -67,7 +73,7 @@ describe("buildSeasonReport — Greller", () => {
       picks: [pick("p1", "t1", "g1"), pick("p2", "t1", "g1")], // tie on the winner -> rollover
       results: [result("t1", "g1", 1000, 1)],
     });
-    const report = buildSeasonReport(data, data.seasons[0]!);
+    const report = buildSeasonReport(data, data.seasons[0]!, DURING_T1);
     // t1 rolled over (30) + t2 (the new open week) ante (30) = 60.
     expect(report.greller.history).toHaveLength(2);
     expect(report.greller.currentBalance).toBe(60);
