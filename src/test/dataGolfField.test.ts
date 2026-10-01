@@ -22,6 +22,32 @@ describe("fetchFieldUpdate", () => {
     expect(result.eventId).toBe("34");
     expect(result.eventName).toBe("BMW Championship");
     expect(result.golferNames).toEqual(["Scheffler, Scottie", "McIlroy, Rory"]);
+    expect(result.firstTeeTime).toBeNull();
+  });
+
+  it("converts the earliest round-1 tee time from course-local to UTC via tz_offset", async () => {
+    const tt = (round_num: number, teetime: string) => ({ round_num, teetime });
+    const fetchImpl = fakeFetch({
+      event_id: 554,
+      event_name: "Bank of Utah Championship",
+      tz_offset: -21600, // MDT
+      field: [
+        { player_name: "Bauchou, Zach", teetimes: [tt(1, "2026-10-01 09:03"), tt(2, "2026-10-02 06:50")] },
+        { player_name: "Akina, Kihei", teetimes: [tt(1, "2026-10-01 07:35"), tt(2, "2026-10-02 13:58")] },
+      ],
+    });
+
+    const result = await fetchFieldUpdate("key", "pga", fetchImpl);
+    // 07:35 MDT, not round 2's earlier-looking 06:50 the next day.
+    expect(result.firstTeeTime).toBe("2026-10-01T13:35:00.000Z");
+  });
+
+  it("leaves firstTeeTime null without a tz_offset rather than guessing the zone", async () => {
+    const fetchImpl = fakeFetch({
+      event_id: 554,
+      field: [{ player_name: "Akina, Kihei", teetimes: [{ round_num: 1, teetime: "2026-10-01 07:35" }] }],
+    });
+    expect((await fetchFieldUpdate("key", "pga", fetchImpl)).firstTeeTime).toBeNull();
   });
 
   it("throws on a non-ok response", async () => {
@@ -34,6 +60,7 @@ describe("fieldForTournament", () => {
     eventId: "34",
     eventName: "BMW Championship",
     golferNames: ["Scheffler, Scottie"],
+    firstTeeTime: null,
   };
 
   it("returns the field when the event id matches", () => {

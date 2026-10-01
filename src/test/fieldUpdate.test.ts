@@ -162,6 +162,46 @@ describe("runFieldUpdateSweep", () => {
   });
 });
 
+describe("runFieldUpdateSweep tee times", () => {
+  const withTeeTimes = (eventId: number, tzOffset: number, r1: string[]) => ({
+    ...fieldResponse(eventId, r1.map((_, i) => `Player ${i}`)),
+    tz_offset: tzOffset,
+    field: r1.map((teetime, i) => ({ player_name: `Player ${i}`, teetimes: [{ round_num: 1, teetime }] })),
+  });
+
+  it("replaces the 10:00 UTC placeholder deadline with the real first tee time", async () => {
+    // Regression: Bank of Utah (Mountain time) locked picks at 5 AM Central,
+    // 3.5 hours before anyone teed off.
+    const t = tournament("t1", 1, { externalEventId: "554", startTime: "2026-10-01T10:00:00.000Z" });
+    const store = new MemoryLeagueStore(baseData({ tournaments: [t] }));
+    const fetchImpl = fakeFetch(withTeeTimes(554, -21600, ["2026-10-01 09:03", "2026-10-01 07:35"]));
+
+    await runFieldUpdateSweep(store, vi.fn(), "http://app", "key", "pga", new Date("2026-09-29T20:00:00Z"), fetchImpl);
+
+    expect((await store.read()).tournaments[0]!.startTime).toBe("2026-10-01T13:35:00.000Z");
+  });
+
+  it("moves the deadline earlier for an overseas event that tees off before 10:00 UTC", async () => {
+    const t = tournament("t1", 1, { externalEventId: "100", startTime: "2026-07-16T10:00:00.000Z" });
+    const store = new MemoryLeagueStore(baseData({ tournaments: [t] }));
+    const fetchImpl = fakeFetch(withTeeTimes(100, 3600, ["2026-07-16 06:35"])); // BST
+
+    await runFieldUpdateSweep(store, vi.fn(), "http://app", "key", "pga", new Date("2026-07-14T20:00:00Z"), fetchImpl);
+
+    expect((await store.read()).tournaments[0]!.startTime).toBe("2026-07-16T05:35:00.000Z");
+  });
+
+  it("leaves the deadline alone when DataGolf has loaded a different event", async () => {
+    const t = tournament("t1", 1, { externalEventId: "554", startTime: "2026-10-01T10:00:00.000Z" });
+    const store = new MemoryLeagueStore(baseData({ tournaments: [t] }));
+    const fetchImpl = fakeFetch(withTeeTimes(500, -21600, ["2026-09-24 07:35"]));
+
+    await runFieldUpdateSweep(store, vi.fn(), "http://app", "key", "pga", new Date("2026-09-24T00:00:00Z"), fetchImpl);
+
+    expect((await store.read()).tournaments[0]!.startTime).toBe("2026-10-01T10:00:00.000Z");
+  });
+});
+
 describe("runFieldUpdateSweep past a dead tournament", () => {
   // Regression: the 2026 Presidents Cup (a no-prize-money team exhibition
   // DataGolf doesn't carry in the PGA calendar) sat as the open tournament

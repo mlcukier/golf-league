@@ -79,6 +79,15 @@ export async function runFieldUpdateSweep(
     const afterUpdate = await store.update((d) => {
       const t = d.tournaments.find((x) => x.id === tournament.id);
       if (t) t.fieldLastCheckedAt = now.toISOString();
+      // The stored startTime is usually seed-schedule.mjs's 10:00 UTC
+      // placeholder (DataGolf's schedule has no tee times). Once the matched
+      // field carries real round-1 tee times, the first one IS the deadline,
+      // in either direction: later for a West Coast event, earlier for one
+      // overseas where 10:00 UTC would still be accepting picks mid-round.
+      if (t && golferNames !== null && update.firstTeeTime && update.firstTeeTime !== t.startTime) {
+        console.log(`${t.name}: pick deadline ${t.startTime} -> ${update.firstTeeTime} (DataGolf first tee time)`);
+        t.startTime = update.firstTeeTime;
+      }
       // Empty rows means DataGolf hasn't posted this event's field yet even
       // though the id matched — never clobber a real stored field with
       // emptiness, just retry next check.
@@ -109,7 +118,8 @@ export async function runFieldUpdateSweep(
     const newlyAffected = affectedPicks.filter((p) => !alreadyNotified.has(withdrawalKey(p.participantId, p.golferId)));
     if (newlyAffected.length === 0) continue;
 
-    await sendFieldWithdrawalAlerts(store, sendMail, appUrl, afterUpdate, tournament, admins, newlyAffected, now);
+    const current = afterUpdate.tournaments.find((x) => x.id === tournament.id) ?? tournament;
+    await sendFieldWithdrawalAlerts(store, sendMail, appUrl, afterUpdate, current, admins, newlyAffected, now);
   }
 }
 
