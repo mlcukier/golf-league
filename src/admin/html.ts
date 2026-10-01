@@ -41,6 +41,7 @@ export const ADMIN_HTML = /* html */ `<!doctype html>
   .dead { color:var(--bad); text-decoration:line-through; }
   .hearn { color:var(--warn); }
   .muted { color:var(--muted); }
+  tr.past td { color:var(--muted); opacity:.55; }
   #toast { position:fixed; right:16px; bottom:16px; background:var(--panel); border:1px solid var(--line); padding:10px 14px; border-radius:8px; display:none; max-width:60ch; z-index:10; }
   .stat { font-size:24px; font-weight:650; }
   .gbox { background:var(--panel); border:1px solid var(--line); border-radius:10px; margin-bottom:8px; overflow:hidden; }
@@ -732,6 +733,11 @@ function renderSchedule(el) {
   (REPORT.quarterBoundaries || []).forEach((b) => {
     if (b.quarter < 4) lastOfQuarter[b.lastSequence] = b.quarter;
   });
+  // Everything before the open week is over: greyed out with no edit
+  // buttons, so a deadline fix can't land on last week's row by mistake.
+  // No open tournament means the whole season has been played.
+  const open = REPORT.tournaments.find((t) => t.id === REPORT.openTournamentId);
+  const isPast = (t) => !open || t.sequence < open.sequence;
 
   el.innerHTML =
     '<div class="card"><h2>Add tournament</h2><div class="row">' +
@@ -744,13 +750,14 @@ function renderSchedule(el) {
       '<p class="muted">Deadlines seeded from DataGolf default to a conservative 10:00 UTC placeholder (DataGolf\\'s schedule has no real tee time) \\u2014 check/edit the actual first tee time before each week locks.</p>' +
       '<table>' +
       '<tr><th>#</th><th>Tournament</th><th>Starts / deadline</th><th></th></tr>' +
-      REPORT.tournaments.map((t) => '<tr><td>' + t.sequence + '</td><td>' + esc(t.name) +
+      REPORT.tournaments.map((t) => '<tr' + (isPast(t) ? ' class="past"' : '') + '><td>' + t.sequence + '</td><td>' + esc(t.name) +
         (t.isSeasonFinale ? ' <span class="pill">finale</span>' : '') +
         (lastOfQuarter[t.sequence] ? ' <span class="pill">last of Q' + lastOfQuarter[t.sequence] + '</span>' : '') +
         '</td><td>' +
         new Date(t.startTime).toLocaleString() + '</td><td>' +
-        '<button class="act ghost" data-edit="' + t.id + '">Edit time</button> ' +
-        '<button class="act ghost" data-fld="' + t.id + '">Set field</button></td></tr>').join('') + '</table></div>' +
+        (isPast(t) ? '<span class="muted">played</span>' :
+          '<button class="act ghost" data-edit="' + t.id + '">Edit time</button> ' +
+          '<button class="act ghost" data-fld="' + t.id + '">Set field</button>') + '</td></tr>').join('') + '</table></div>' +
     '<div class="card" id="editBox" style="display:none"><h2>Edit deadline for <span id="editName"></span></h2>' +
       '<div class="row"><input id="editStart" type="datetime-local">' +
         '<button class="act" id="editGo">Save</button></div>' +
